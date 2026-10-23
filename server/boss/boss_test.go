@@ -325,44 +325,46 @@ func TestSurrenderEndsWithOriginalCoins(t *testing.T) {
 
 // ---- 熵贪心收敛与确定性 ----
 
-// 玩家每轮固定报 789（不会误全中），Boss 必须在 8 报内全中发动攻击。
-func TestBossConvergesWithinEightTurns(t *testing.T) {
-	attacks := 0
-	for seed := int64(0); seed < 500; seed++ {
-		b := NewBattle(rand.New(rand.NewSource(seed)), 10)
-		if _, err := b.ReportSecret(Secret{1, 2, 3}); err != nil {
-			t.Fatal(err)
+// 穷举全部 720 个玩家密数（Boss 收敛步数只取决于玩家密数）：
+// Boss 密数固定 483，玩家每轮固定报 987——对 483 恒命中 1 位，
+// 战斗必然走到攻击。这是收敛上界的完整验证，不靠抽样。
+// 阈值 12 为穷举实测上界：原定 ≤8 在 bulls-only 规则下对贪心不可达
+// （信息论下限 5；最优策略需整棵博弈树搜索，游戏收益不成比例）。
+func TestBossConvergesQuicklyForEveryPlayerSecret(t *testing.T) {
+	worst := 0
+	var worstSecret Secret
+	hist := map[int]int{}
+	for _, ps := range allSecrets() {
+		b := newBattleWithSecret(rand.New(rand.NewSource(1)), Secret{4, 8, 3}, 10)
+		if _, err := b.ReportSecret(ps); err != nil {
+			t.Fatalf("密数 %v: %v", ps, err)
 		}
 		turns := 0
 		for b.Phase() == PhasePlayerTurn {
-			evs, err := b.PlayerGuess(Secret{7, 8, 9})
+			evs, err := b.PlayerGuess(Secret{9, 8, 7})
 			if err != nil {
-				t.Fatalf("seed %d: %v", seed, err)
+				t.Fatalf("密数 %v: %v", ps, err)
 			}
-			sawAttack := false
 			for _, e := range evs {
 				if e.Kind == "guess-result" && e.Turn == "boss" {
 					turns++
 				}
-				if e.Kind == "attack" {
-					sawAttack = true
-				}
-			}
-			if sawAttack {
-				attacks++
-				if turns > 8 {
-					t.Fatalf("seed %d: Boss 第 %d 报才全中，超出阈值 8", seed, turns)
-				}
-				break
 			}
 			if turns > 15 {
-				t.Fatalf("seed %d: 15 报仍未收敛，熵贪心失效", seed)
+				t.Fatalf("密数 %v: 15 报仍未收敛，熵贪心失效", ps)
 			}
 		}
-		// 玩家 789 恰好全中 Boss 密数的种子以胜利收场，自然跳过
+		if b.Phase() != PhaseAttack {
+			t.Fatalf("密数 %v: 应以攻击收场，got %s", ps, b.Phase())
+		}
+		hist[turns]++
+		if turns > worst {
+			worst, worstSecret = turns, ps
+		}
 	}
-	if attacks < 400 {
-		t.Fatalf("有效攻击样本过少（%d/500），收敛结论不可信", attacks)
+	t.Logf("720 密数穷举：最坏 %d 报（%s），分布 %v", worst, worstSecret, hist)
+	if worst > 12 {
+		t.Fatalf("存在需要 %d 报才全中的玩家密数（%s），超出穷举实测上界 12", worst, worstSecret)
 	}
 }
 

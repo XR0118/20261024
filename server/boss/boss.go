@@ -5,8 +5,8 @@ package boss
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
-	"sort"
 )
 
 // Phase 对局阶段。合法动作随阶段切换（见各方法）。
@@ -29,18 +29,39 @@ const (
 	OutcomeSurrender Outcome = "surrender"
 )
 
+// Kind 事件种类（JSON 协议词汇）。
+type Kind string
+
+const (
+	KindBattleStarted Kind = "battle-started"
+	KindGuessResult   Kind = "guess-result"
+	KindAttack        Kind = "attack"
+	KindReveal        Kind = "reveal"
+	KindSwapAccepted  Kind = "swap-accepted"
+	KindSwapDeclined  Kind = "swap-declined"
+	KindBattleEnded   Kind = "battle-ended"
+)
+
+// Turn 回合归属。
+type Turn string
+
+const (
+	TurnPlayer Turn = "player"
+	TurnBoss   Turn = "boss"
+)
+
 // Event 引擎对外发生的全部事实：数据不含台词——挑战者人格的口吻
 // 由台词层（T4）基于这些事件生成。
 type Event struct {
-	Kind       string  `json:"kind"` // battle-started / guess-result / attack / reveal / swap-accepted / swap-declined / battle-ended
-	Turn       string  `json:"turn,omitempty"`
+	Kind       Kind    `json:"kind"`
+	Turn       Turn    `json:"turn,omitempty"`
 	Guess      string  `json:"guess,omitempty"`
-	Hits       int     `json:"hits,omitempty"`
+	Hits       int     `json:"hits"`               // 0 命中也是有效判定，不能被 omitempty 吞掉
 	Position   int     `json:"position,omitempty"` // 亮位：第几位（1–3）
-	Digit      int     `json:"digit,omitempty"`
+	Digit      int     `json:"digit"`              // 亮出的数字可为 0
 	Outcome    Outcome `json:"outcome,omitempty"`
-	Coins      int     `json:"coins,omitempty"`       // 本局原额
-	FinalCoins int     `json:"final_coins,omitempty"` // 结算额
+	Coins      int     `json:"coins"`       // 本局原额（0 金币对局也须携带）
+	FinalCoins int     `json:"final_coins"` // 结算额
 }
 
 // Battle 一场 Boss 战的完整状态。非并发安全：hub 侧串行调用。
@@ -76,13 +97,10 @@ func (b *Battle) ReportSecret(s Secret) ([]Event, error) {
 	if b.phase != PhaseAwaitingSecret {
 		return nil, phaseErr(b.phase)
 	}
-	if !s.Valid() {
-		return nil, fmt.Errorf("密数必须是三个不重复的数字")
+	if err := b.acceptSecret(s, "密数"); err != nil {
+		return nil, err
 	}
-	b.playerSecret = s
-	b.candidates = allSecrets()
-	b.phase = PhasePlayerTurn
-	return []Event{{Kind: "battle-started"}}, nil
+	return []Event{{Kind: KindBattleStarted}}, nil
 }
 
 // PlayerGuess 玩家报数。未全中则 Boss 立即回合一报；全中即胜。
@@ -94,22 +112,22 @@ func (b *Battle) PlayerGuess(s Secret) ([]Event, error) {
 		return nil, fmt.Errorf("报数必须是三个不重复的数字")
 	}
 	h := hits(s, b.bossSecret)
-	evs := []Event{{Kind: "guess-result", Turn: "player", Guess: s.String(), Hits: h}}
+	evs := []Event{{Kind: KindGuessResult, Turn: TurnPlayer, Guess: s.String(), Hits: h}}
 	if h == 3 {
 		return append(evs, b.end(OutcomeWin)...), nil
 	}
 	return append(evs, b.bossTurn()...), nil
 }
 
-// bossTurn Boss 回合：熵贪心选报，按真实命中收紧候选集；全中则转入攻击。
+// bossTurn Boss 回合：按真实命中收紧候选集（Boss 的唯一知识来源），全中即转入攻击。
 func (b *Battle) bossTurn() []Event {
 	guess := pickGuess(b.candidates)
 	h := hits(guess, b.playerSecret)
 	b.candidates = filterConsistent(b.candidates, guess, h)
-	evs := []Event{{Kind: "guess-result", Turn: "boss", Guess: guess.String(), Hits: h}}
+	evs := []Event{{Kind: KindGuessResult, Turn: TurnBoss, Guess: guess.String(), Hits: h}}
 	if h == 3 {
 		b.phase = PhaseAttack
-		return append(evs, Event{Kind: "attack"})
+		return append(evs, Event{Kind: KindAttack})
 	}
 	b.phase = PhasePlayerTurn
 	return evs
@@ -126,7 +144,7 @@ func (b *Battle) ReportBlock(blocked bool) ([]Event, error) {
 	}
 	var evs []Event
 	if pos, digit, ok := b.revealOne(); ok {
-		evs = append(evs, Event{Kind: "reveal", Position: pos, Digit: digit})
+		evs = append(evs, Event{Kind: KindReveal, Position: pos, Digit: digit})
 	}
 	b.phase = PhaseSwap
 	return evs, nil
@@ -152,13 +170,10 @@ func (b *Battle) SwapSecret(s Secret) ([]Event, error) {
 	if b.phase != PhaseSwap {
 		return nil, phaseErr(b.phase)
 	}
-	if !s.Valid() {
-		return nil, fmt.Errorf("新密数必须是三个不重复的数字")
+	if err := b.acceptSecret(s, "新密数"); err != nil {
+		return nil, err
 	}
-	b.playerSecret = s
-	b.candidates = allSecrets()
-	b.phase = PhasePlayerTurn
-	return []Event{{Kind: "swap-accepted"}}, nil
+	return []Event{{Kind: KindSwapAccepted}}, nil
 }
 
 // DeclineSwap 放弃换数：候选集不变（只剩旧密数本身），下回合 Boss 必再全中。
@@ -167,7 +182,7 @@ func (b *Battle) DeclineSwap() ([]Event, error) {
 		return nil, phaseErr(b.phase)
 	}
 	b.phase = PhasePlayerTurn
-	return []Event{{Kind: "swap-declined"}}, nil
+	return []Event{{Kind: KindSwapDeclined}}, nil
 }
 
 // Surrender 投降：Boss 战立即判负。
@@ -178,28 +193,60 @@ func (b *Battle) Surrender() ([]Event, error) {
 	return b.end(OutcomeSurrender), nil
 }
 
+// acceptSecret 校验并接受玩家新密数：Boss 候选集随之重置（知识清零）。
+func (b *Battle) acceptSecret(s Secret, what string) error {
+	if !s.Valid() {
+		return fmt.Errorf("%s必须是三个不重复的数字", what)
+	}
+	b.playerSecret = s
+	b.candidates = allCandidates
+	b.phase = PhasePlayerTurn
+	return nil
+}
+
 func (b *Battle) end(o Outcome) []Event {
 	b.phase = PhaseEnded
 	final := b.runCoins
 	if o == OutcomeWin {
 		final *= 2
 	}
-	return []Event{{Kind: "battle-ended", Outcome: o, Coins: b.runCoins, FinalCoins: final}}
+	return []Event{{Kind: KindBattleEnded, Outcome: o, Coins: b.runCoins, FinalCoins: final}}
+}
+
+// 拒绝语的阶段名用中文：错误文案可能被直接 TTS 播给玩家。
+var phaseNames = map[Phase]string{
+	PhaseAwaitingSecret: "等待密数",
+	PhasePlayerTurn:     "等待报数",
+	PhaseAttack:         "攻击待格挡",
+	PhaseSwap:           "换数抉择中",
+	PhaseEnded:          "已终局",
 }
 
 func phaseErr(p Phase) error {
-	return fmt.Errorf("当前阶段（%s）不接受这个动作", p)
+	return fmt.Errorf("现在%s，不接受这个动作", phaseNames[p])
 }
 
-// pickGuess 信息熵贪心：选让命中数分布最均衡的报数（整数化的熵最大化——
-// 逐位比较降序桶大小，越均衡越优）；并列取数值序，保证确定性可复现。
+// pickGuess 信息熵贪心：在全部可能报数里选使命中数分布的香农熵最大者。
+// 候选集之外的报数不可能是密数本身、只提供过滤信息，因此熵并列时
+// 优先候选集内的报数（保留当场全中的机会）；再按数值序保证确定性。
+// 候选集为全集时任意报数的信息量相同（数字重标记对称性），直接取 012，
+// 省掉每局最贵的一次全空间打分。
 func pickGuess(cands []Secret) Secret {
-	best := cands[0]
-	bestBuckets := hitBuckets(cands, best)
-	for _, g := range cands[1:] {
-		bk := hitBuckets(cands, g)
-		if moreInformative(bk, bestBuckets) {
-			best, bestBuckets = g, bk
+	if len(cands) == len(allCandidates) {
+		return Secret{0, 1, 2}
+	}
+	inCand := make(map[Secret]bool, len(cands))
+	for _, c := range cands {
+		inCand[c] = true
+	}
+	best := allCandidates[0]
+	bestEnt := entropy(hitBuckets(cands, best))
+	bestIn := inCand[best]
+	for _, g := range allCandidates[1:] {
+		ent := entropy(hitBuckets(cands, g))
+		gIn := inCand[g]
+		if ent > bestEnt || (ent == bestEnt && gIn && !bestIn) {
+			best, bestEnt, bestIn = g, ent, gIn
 		}
 	}
 	return best
@@ -213,20 +260,20 @@ func hitBuckets(cands []Secret, g Secret) [4]int {
 	return bk
 }
 
-// moreInformative：降序桶逐位比较，小者胜（最大桶越小 = 分割越均衡 = 期望信息量越大）。
-func moreInformative(a, b [4]int) bool {
-	as, bs := a, b
-	sort.Sort(sort.Reverse(sort.IntSlice(as[:])))
-	sort.Sort(sort.Reverse(sort.IntSlice(bs[:])))
-	for i := range as {
-		if as[i] != bs[i] {
-			return as[i] < bs[i]
+func entropy(bk [4]int) float64 {
+	total := bk[0] + bk[1] + bk[2] + bk[3]
+	e := 0.0
+	for _, n := range bk {
+		if n > 0 {
+			p := float64(n) / float64(total)
+			e -= p * math.Log2(p)
 		}
 	}
-	return false
+	return e
 }
 
 // filterConsistent 只保留与已观察到的（报数, 命中）一致的候选——真密数必在其中。
+// 总是产出新切片：候选集与共享的 allCandidates 都不被原地修改。
 func filterConsistent(cands []Secret, guess Secret, h int) []Secret {
 	out := make([]Secret, 0, len(cands))
 	for _, c := range cands {
@@ -236,6 +283,9 @@ func filterConsistent(cands []Secret, guess Secret, h int) []Secret {
 	}
 	return out
 }
+
+// allCandidates 全部 720 个可能密数（数值升序）。进程内共享只读。
+var allCandidates = allSecrets()
 
 func allSecrets() []Secret {
 	out := make([]Secret, 0, 720)
