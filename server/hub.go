@@ -4,21 +4,49 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"loudleap/server/boss"
+)
+
+// 游戏相位（ADR-0003 三阶段）。语音链路只在跨越 running 边界时切换。
+const (
+	phaseIdle    = "idle"
+	phaseRunning = "running"
+	phaseBoss    = "boss"
 )
 
 // 游戏网页上报的最新状态，供台词生成时取用（如结算点评报距离和摔死次数）。
 type GameState struct {
-	Playing bool  `json:"playing"`
-	Dist    int   `json:"dist"`
-	Deaths  int   `json:"deaths"`
-	Won     bool  `json:"won"`
-	Seq     int64 `json:"seq"`
+	Playing bool   `json:"playing"`
+	Phase   string `json:"phase,omitempty"` // idle/running/boss；空或非法值=按 playing 推导（旧前端兼容）
+	Dist    int    `json:"dist"`
+	Deaths  int    `json:"deaths"`
+	Won     bool   `json:"won"`
+	Seq     int64  `json:"seq"`
+}
+
+// voiceLink 是 hub 对语音链路的全部依赖（LinxClient 实现）。
+// 抽接口是为了 hub 测试能注入假链路验证三阶段联动。
+type voiceLink interface {
+	SetPlaying(bool)
+	SendAudio(context.Context, []byte) error
+}
+
+// browserMsg 浏览器主通道文本消息的全集。
+type browserMsg struct {
+	Type    string    `json:"type"`
+	State   GameState `json:"state"`
+	Coins   int       `json:"coins"`
+	Action  string    `json:"action"`
+	Digits  string    `json:"digits"`
+	Blocked *bool     `json:"blocked"`
 }
 
 type GameHub struct {
@@ -26,12 +54,19 @@ type GameHub struct {
 	state GameState
 	conn  *websocket.Conn
 	brain *Brain
-	linx  *LinxClient
+	linx  voiceLink
 	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+
+	bossMu sync.Mutex
+	battle *boss.Battle
+	newRng func() *rand.Rand // Boss 战随机源；测试注入固定 seed
 }
 
 func NewGameHub(brain *Brain) *GameHub {
-	return &GameHub{brain: brain}
+	return &GameHub{
+		brain:  brain,
+		newRng: func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
+	}
 }
 
 func (h *GameHub) SetLinxClient(lc *LinxClient) {
@@ -47,7 +82,12 @@ func (h *GameHub) SetLinxClient(lc *LinxClient) {
 // stt 文本直达游戏动作（ADR-0002 主线：进程内，零外部依赖）。
 // 开局动作配一条 prepare 先行：何时真正开局由浏览器决定——只有它知道
 // 本地播放队列何时排空（平台的 tts stop 只代表下发完，不等于播完）。
+// Boss 战进行中文本先进引擎（报数/投降），跑酷指令此时装聋。
 func (h *GameHub) handleSTT(text string) {
+	if h.bossActive() {
+		h.applyBossSTT(text)
+		return
+	}
 	actions := gameActions(classify(text))
 	if len(actions) == 0 {
 		return
@@ -94,7 +134,212 @@ func (h *GameHub) pushBrowserJSON(payload map[string]any) {
 	}
 }
 
-// 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报。
+// effectivePhase 三阶段判定口径：显式且合法的 phase 优先，否则按旧 playing 推导。
+func effectivePhase(st GameState) string {
+	switch st.Phase {
+	case phaseIdle, phaseRunning, phaseBoss:
+		return st.Phase
+	}
+	if st.Playing {
+		return phaseRunning
+	}
+	return phaseIdle
+}
+
+// currentPhase 报告当前有效相位。
+func (h *GameHub) currentPhase() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return effectivePhase(h.state)
+}
+
+// setPhase 服务端主动切阶段（进场/收局），联动语音链路：
+// 只有跨越 running 边界才拨动——boss 与 idle 同为保持连接（ADR-0003 三阶段）。
+func (h *GameHub) setPhase(p string) {
+	h.mu.Lock()
+	prev := effectivePhase(h.state)
+	h.state.Phase = p
+	h.mu.Unlock()
+	h.syncVoice(prev, p)
+}
+
+// syncVoice 语音会话的真实生命周期只有连/断两态：跑酷断，待命与 Boss 战连。
+func (h *GameHub) syncVoice(prev, cur string) {
+	if (prev == phaseRunning) != (cur == phaseRunning) {
+		h.setVoiceRunning(cur == phaseRunning)
+	}
+}
+
+func (h *GameHub) setVoiceRunning(running bool) {
+	h.mu.RLock()
+	linx := h.linx
+	h.mu.RUnlock()
+	if linx != nil {
+		linx.SetPlaying(running)
+	}
+}
+
+// applyGameState 合并浏览器状态上报。战斗进行中相位由服务端持有：
+// 旧式 playing 上报（无 phase）不得把 Boss 战打回 running 切断语音。
+func (h *GameHub) applyGameState(st GameState) {
+	active := h.bossActive()
+	h.mu.Lock()
+	prev := effectivePhase(h.state)
+	if active && effectivePhase(st) != phaseBoss {
+		st.Phase = phaseBoss
+	}
+	h.state = st
+	cur := effectivePhase(h.state)
+	h.mu.Unlock()
+	h.syncVoice(prev, cur)
+}
+
+// bossActive 报数/投降等 STT 是否应进引擎。
+func (h *GameHub) bossActive() bool {
+	h.bossMu.Lock()
+	defer h.bossMu.Unlock()
+	return h.liveBattle() != nil
+}
+
+// liveBattle 进行中的战斗；nil=无战局或已终局。调用方须持有 bossMu。
+func (h *GameHub) liveBattle() *boss.Battle {
+	if h.battle != nil && h.battle.Phase() != boss.PhaseEnded {
+		return h.battle
+	}
+	return nil
+}
+
+// enterBoss 浏览器跑完全程进场开战：本局金币原额交给引擎托管，
+// 结算（胜=翻倍）由 battle-ended 事件带回。
+func (h *GameHub) enterBoss(coins int) {
+	h.bossMu.Lock()
+	defer h.bossMu.Unlock()
+	if h.liveBattle() != nil {
+		h.pushBossEvents([]boss.Event{{Kind: "error", Message: "本局 Boss 战已在进行"}})
+		return
+	}
+	h.battle = boss.NewBattle(h.newRng(), coins)
+	h.setPhase(phaseBoss)
+	h.pushBossEvents([]boss.Event{{Kind: "awaiting-secret", Message: "请报出你的三位密数"}})
+}
+
+// applyBossSTT 语音输入进引擎（与 /intent 调试通道共用）。
+func (h *GameHub) applyBossSTT(text string) {
+	h.bossMu.Lock()
+	defer h.bossMu.Unlock()
+	if h.liveBattle() == nil {
+		return
+	}
+	h.applyParsed(text)
+}
+
+// bossAction 浏览器显式动作（调试按键/QTE 格挡结果），与语音通道等价。
+func (h *GameHub) bossAction(m browserMsg) {
+	h.bossMu.Lock()
+	defer h.bossMu.Unlock()
+	if h.liveBattle() == nil {
+		return
+	}
+	switch m.Action {
+	case "block":
+		if m.Blocked == nil {
+			return
+		}
+		evs, err := h.battle.ReportBlock(*m.Blocked)
+		h.settleBoss(evs, err)
+	case "secret", "guess":
+		h.applyParsed(m.Digits)
+	case "swap":
+		if m.Digits == "" {
+			// 与语音通道对称：只说「换数」先给提示，新密数随后报
+			h.applyInput(boss.Input{Intent: boss.IntentSwap})
+			return
+		}
+		h.applyParsed(m.Digits)
+	case "decline-swap":
+		h.applyInput(boss.Input{Intent: boss.IntentDeclineSwap})
+	case "surrender":
+		h.applyInput(boss.Input{Intent: boss.IntentSurrender})
+	}
+}
+
+// applyParsed 解析一段报数文本并分发（调用方须持有 bossMu）。
+func (h *GameHub) applyParsed(text string) {
+	in, err := boss.RouteInput(text)
+	if err != nil {
+		h.pushBossEvents([]boss.Event{{Kind: "error", Message: err.Error()}})
+		return
+	}
+	h.applyInput(in)
+}
+
+// applyInput 按引擎当前阶段分发一次已解析的输入。调用方须持有 bossMu。
+func (h *GameHub) applyInput(in boss.Input) {
+	b := h.liveBattle()
+	if b == nil {
+		return
+	}
+	// 投降任何未终局阶段都受理（含攻击等待期）
+	if in.Intent == boss.IntentSurrender {
+		evs, err := b.Surrender()
+		h.settleBoss(evs, err)
+		return
+	}
+	var evs []boss.Event
+	var err error
+	switch b.Phase() {
+	case boss.PhaseAwaitingSecret:
+		if in.Guess != (boss.Secret{}) {
+			evs, err = b.ReportSecret(in.Guess)
+		}
+	case boss.PhasePlayerTurn:
+		if in.Guess != (boss.Secret{}) {
+			evs, err = b.PlayerGuess(in.Guess)
+		}
+	case boss.PhaseSwap:
+		switch {
+		case in.Guess != (boss.Secret{}):
+			evs, err = b.SwapSecret(in.Guess)
+		case in.Intent == boss.IntentDeclineSwap:
+			evs, err = b.DeclineSwap()
+		case in.Intent == boss.IntentSwap:
+			evs = []boss.Event{{Kind: "swap-prompt", Message: "请报出你的新密数"}}
+		}
+	case boss.PhaseAttack:
+		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
+	}
+	h.settleBoss(evs, err)
+}
+
+// settleBoss 收局并推送：battle-ended 时先回 idle 再推（读端收到
+// battle-ended 的瞬间相位必然已是 idle），语音回到待命连接。
+func (h *GameHub) settleBoss(evs []boss.Event, err error) {
+	if err != nil {
+		h.pushBossEvents([]boss.Event{{Kind: "error", Message: err.Error()}})
+		return
+	}
+	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
+		h.setPhase(phaseIdle)
+	}
+	h.pushBossEvents(evs)
+}
+
+// abandonBoss 页面重载即弃局：刷新后的新页面不应接手旧战斗状态。
+func (h *GameHub) abandonBoss() {
+	h.bossMu.Lock()
+	h.battle = nil
+	h.bossMu.Unlock()
+	h.setPhase(phaseIdle)
+}
+
+func (h *GameHub) pushBossEvents(evs []boss.Event) {
+	if len(evs) == 0 {
+		return
+	}
+	h.pushBrowserJSON(map[string]any{"type": "boss-events", "events": evs})
+}
+
+// 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报 + Boss 战动作。
 func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -103,11 +348,15 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	h.mu.Lock()
-	if h.bconn != nil {
+	replaced := h.bconn != nil
+	if replaced {
 		h.bconn.Close(websocket.StatusPolicyViolation, "replaced")
 	}
 	h.bconn = conn
 	h.mu.Unlock()
+	if replaced {
+		h.abandonBoss()
+	}
 	defer func() {
 		h.mu.Lock()
 		if h.bconn == conn {
@@ -130,22 +379,17 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		case websocket.MessageText:
-			var msg struct {
-				Type  string    `json:"type"`
-				State GameState `json:"state"`
-			}
+			var msg browserMsg
 			if err := json.Unmarshal(data, &msg); err != nil {
 				continue
 			}
-			if msg.Type == "game-state" {
-				h.mu.Lock()
-				prevPlaying := h.state.Playing
-				h.state = msg.State
-				h.mu.Unlock()
-				// 阶段切换联动语音会话生命周期（ADR-0002：playing 停上行/断会话，idle 重连）
-				if prevPlaying != msg.State.Playing && h.linx != nil {
-					h.linx.SetPlaying(msg.State.Playing)
-				}
+			switch msg.Type {
+			case "game-state":
+				h.applyGameState(msg.State)
+			case "boss-enter":
+				h.enterBoss(msg.Coins)
+			case "boss-action":
+				h.bossAction(msg)
 			}
 		}
 	}
@@ -159,7 +403,7 @@ func (h *GameHub) HandleLinxChat(w http.ResponseWriter, r *http.Request) {
 		Auth struct {
 			DeviceID string `json:"device_id"`
 		} `json:"auth"`
-		Type string `json:"type"`
+		Type    string `json:"type"`
 		Details struct {
 			Msg       string `json:"msg"`
 			SessionID string `json:"session_id"`
@@ -237,9 +481,7 @@ func (h *GameHub) HandleGameWS(w http.ResponseWriter, r *http.Request) {
 			log.Printf("game ws closed: %v", err)
 			return
 		}
-		h.mu.Lock()
-		h.state = st
-		h.mu.Unlock()
+		h.applyGameState(st)
 	}
 }
 
@@ -251,6 +493,7 @@ func (h *GameHub) State() GameState {
 
 // 设备端（linx_app）把灵矽下发的 stt 文本转过来，本地意图匹配后直接驱动游戏。
 // 这条路不经过平台 LLM/MCP，是免公网的主线通道（见 ADR-0002）。
+// Boss 战中与语音通道等价：文本先进引擎。
 func (h *GameHub) HandleIntent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text string `json:"text"`
@@ -260,6 +503,12 @@ func (h *GameHub) HandleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("intent: %q", req.Text)
+	if h.bossActive() {
+		h.applyBossSTT(req.Text)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"actions": []any{}})
+		return
+	}
 	actions := gameActions(classify(req.Text))
 	if len(actions) > 0 {
 		h.PushGame(r.Context(), actions)
