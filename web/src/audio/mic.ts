@@ -1,9 +1,11 @@
 // 麦克风音量检测：getUserMedia + AnalyserNode 输出 0..1 平滑包络。
 // 实时判定必须本地完成，不走灵矽链路（ASR 往返在秒级，见 ADR-0001）。
 
-export const JUMP_THRESHOLD = 0.15
-const MIN_JUMP_VELOCITY = 320
-const MAX_JUMP_VELOCITY = 820
+// 阈值偏高：呼吸/环境噪声不应触发跳跃，只有"喊"才算指令
+export const JUMP_THRESHOLD = 0.3
+const MIN_JUMP_VELOCITY = 380
+// 960 初速对应跳高 ≈328px、滞空水平 ≈329px，覆盖最深 280px 的坑
+const MAX_JUMP_VELOCITY = 960
 
 // 音量包络 → 起跳初速；低于阈值视为没在喊，返回 null
 export function levelToPower(level: number): number | null {
@@ -66,8 +68,8 @@ class Mic {
     const rms = Math.sqrt(sum / this.buf.length)
     // 喊声 RMS 通常 0.1~0.3，×4 拉到满量程
     const target = Math.min(rms * 4, 1)
-    // attack 快、release 慢：起跳跟手，松口不抖
-    this.envelope = target > this.envelope ? target : this.envelope * 0.85
+    // attack 快、release 较快：余响尽快衰减，避免落地时残留包络再次触发起跳
+    this.envelope = target > this.envelope ? target : this.envelope * 0.7
     return this.envelope
   }
 }
