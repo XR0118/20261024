@@ -23,9 +23,16 @@ export async function startVoice(): Promise<void> {
   await encoderLoop(stream)
 }
 
+let ttsRemotePlaying = false // 平台侧 TTS 进行中（tts-state 事件）
+
 function onMessage(ev: MessageEvent) {
   if (typeof ev.data === 'string') {
-    const msg = JSON.parse(ev.data) as { type: string; actions?: Action[]; listening?: boolean }
+    const msg = JSON.parse(ev.data) as {
+      type: string
+      actions?: Action[]
+      listening?: boolean
+      playing?: boolean
+    }
     if (msg.type === 'game-action' && msg.actions) {
       for (const a of msg.actions) {
         window.dispatchEvent(new CustomEvent('game-action', { detail: a }))
@@ -34,9 +41,20 @@ function onMessage(ev: MessageEvent) {
     if (msg.type === 'voice-state') {
       window.dispatchEvent(new CustomEvent('voice-state', { detail: { listening: msg.listening } }))
     }
+    if (msg.type === 'tts-state') {
+      ttsRemotePlaying = !!msg.playing
+    }
     return
   }
   void decodeAndPlay(ev.data as ArrayBuffer)
+}
+
+// "播报完毕" = 平台 TTS 已停 && 本地播放队列排空（jitter 起播缓冲的尾音也放完）。
+// 只有浏览器知道本地队列何时结束，这个判定不能放在 golang 侧。
+export function ttsDone(): boolean {
+  if (ttsRemotePlaying) return false
+  if (playCtx && lastEnd > playCtx.currentTime + 0.05) return false
+  return true
 }
 
 // ---------------- 上行：PCM → OPUS ----------------

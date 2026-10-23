@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { reportGameState } from '../audio/voice'
+import { reportGameState, ttsDone } from '../audio/voice'
 import { getPlayer, setPlayerName } from '../player'
 
 const W = 960
@@ -15,16 +15,23 @@ export class BootScene extends Phaser.Scene {
   private hintText!: Phaser.GameObjects.Text
   private meText!: Phaser.GameObjects.Text
   private lastReport = 0
+  private pendingSeed: number | undefined | null = null // null=未挂起；undefined=start；数字=load_level seed
+  private prepareAt = 0
   private onGameAction = (ev: Event) => {
     const a = (ev as CustomEvent).detail as { action: string; params: { seed?: number } }
     if (a.action === 'prepare') {
-      // 主持人正在喊"三二一"，等 tts 播完（或 3.5s 兜底）才收到 start
       this.hintText.setText('🎙 主持人正在发令，马上开跑…')
       this.tweens.add({ targets: this.hintText, alpha: 0.4, duration: 400, yoyo: true, repeat: -1 })
       return
     }
-    if (a.action === 'start') this.startGame(undefined)
-    if (a.action === 'load_level') this.startGame(Number(a.params?.seed ?? Math.random() * 1e9))
+    if (a.action === 'start') {
+      this.pendingSeed = undefined
+      this.prepareAt = this.time.now
+    }
+    if (a.action === 'load_level') {
+      this.pendingSeed = Number(a.params?.seed ?? Math.random() * 1e9)
+      this.prepareAt = this.time.now
+    }
   }
 
   constructor() {
@@ -85,6 +92,15 @@ export class BootScene extends Phaser.Scene {
   }
 
   update(time: number) {
+    // 开局挂起中：等主持人播报真正结束（平台 tts 停 + 本地队列排空），
+    // 4s 兜底防平台不回播报时卡死
+    if (this.pendingSeed !== null) {
+      if (ttsDone() || time - this.prepareAt > 4000) {
+        const seed = this.pendingSeed
+        this.pendingSeed = null
+        this.startGame(seed ?? undefined)
+      }
+    }
     if (time - this.lastReport > 500) {
       this.lastReport = time
       reportGameState({ playing: false, dist: 0, deaths: 0, won: false })
