@@ -15,13 +15,21 @@ import (
 	"loudleap/server/boss"
 )
 
-// voiceLink 的假实现：只记录 SetPlaying 调用，验证三阶段联动。
+// voiceLink 的假实现：记录 SetPlaying 调用（三阶段联动）与台词（台词层）。
 type fakeVoiceLink struct {
-	calls []bool
+	calls  []bool
+	spoken []string // "exact:台词" | "llm:事件标记"
 }
 
 func (f *fakeVoiceLink) SetPlaying(p bool)                       { f.calls = append(f.calls, p) }
 func (f *fakeVoiceLink) SendAudio(context.Context, []byte) error { return nil }
+func (f *fakeVoiceLink) Speak(text string, exact bool) {
+	tag := "llm"
+	if exact {
+		tag = "exact"
+	}
+	f.spoken = append(f.spoken, tag+":"+text)
+}
 
 func newBossHub(t *testing.T) (*GameHub, *fakeVoiceLink) {
 	t.Helper()
@@ -252,5 +260,33 @@ func TestReconnectAbandonsBattle(t *testing.T) {
 	sendWS(t, conn2, map[string]any{"type": "boss-enter", "coins": 50})
 	if evs := readBossEvents(t, conn2); len(evs) != 1 || evs[0].Kind != "awaiting-secret" {
 		t.Fatalf("重连后应能开新战斗，got %+v", evs)
+	}
+}
+
+// Boss 事件转化为语音台词：关键信息逐字直发（exact），氛围走 LLM 事件标记。
+func TestBossEventsAreSpoken(t *testing.T) {
+	h, vl := newBossHub(t)
+	conn := dialHub(t, h)
+
+	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30})
+	readBossEvents(t, conn) // awaiting-secret
+	h.handleSTT("我的密数是四八三")
+	readBossEvents(t, conn) // battle-started
+	h.handleSTT("报数 九八七")
+	readBossEvents(t, conn) // player + boss guess-result
+	h.handleSTT("我投降了")
+	readBossEvents(t, conn) // battle-ended
+
+	spoken := strings.Join(vl.spoken, "\n")
+	for _, want := range []string{
+		"exact:请报出你的三位密数",
+		"llm:【BOSS 来了】",
+		"exact:零位",         // 玩家九八七对 seed-7 密数零命中的播报
+		"exact:听好了，我报：零一二", // Boss 首报恒为 012
+		"exact:认输了？明智",
+	} {
+		if !strings.Contains(spoken, want) {
+			t.Errorf("台词缺失 %q\nspoken:\n%s", want, spoken)
+		}
 	}
 }

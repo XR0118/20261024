@@ -16,23 +16,30 @@ import (
 // LinxClient 以设备身份直连灵矽云：OTA 换 token → WebSocket 会话。
 // 协议参考 https://linx.qiniu.com/docs/xrobot/platform/websocket 与 linx_app 行为。
 type LinxClient struct {
-	Mac        string
-	wsURL      string
-	token      string
-	conn       *websocket.Conn
-	sessionID  string
-	mu         sync.Mutex
-	muted      bool // TTS 播放期间暂停上行，防止扬声器串回麦克风
-	playing    bool // 跑酷进行中：无语音需求，停上行，TTS 收尾后主动断会话（按会话时长计费）
-	wake       chan struct{}
-	OnSTT      func(text string)
-	OnTTSFrame func(opus []byte)
+	Mac          string
+	wsURL        string
+	token        string
+	conn         *websocket.Conn
+	sessionID    string
+	mu           sync.Mutex
+	muted        bool // TTS 播放期间暂停上行，防止扬声器串回麦克风
+	playing      bool // 跑酷进行中：无语音需求，停上行，TTS 收尾后主动断会话（按会话时长计费）
+	wake         chan struct{}
+	speakCh      chan speakReq // 台词队列：串行播放，防 detect 打断
+	ttsDone      chan struct{} // 当前台词的 tts stop 信号（speak 等待用）
+	OnSTT        func(text string)
+	OnTTSFrame   func(opus []byte)
 	OnVoiceState func(listening bool)
-	OnTTSState func(playing bool) // 平台侧 TTS 起/止；真正"播完"由浏览器结合本地播放队列判定
+	OnTTSState   func(playing bool) // 平台侧 TTS 起/止；真正"播完"由浏览器结合本地播放队列判定
+}
+
+type speakReq struct {
+	text  string
+	exact bool
 }
 
 func NewLinxClient(mac string) *LinxClient {
-	return &LinxClient{Mac: mac, wake: make(chan struct{}, 1)}
+	return &LinxClient{Mac: mac, wake: make(chan struct{}, 1), speakCh: make(chan speakReq, 8)}
 }
 
 const otaURL = "https://xrobo.qiniuapi.com/v1/ota/"
@@ -94,6 +101,7 @@ func (c *LinxClient) ota(ctx context.Context) error {
 // Run 阻塞维持会话。playing 期间主动断开并 hold（不重连——会话按秒计费，
 // 跑酷中没有语音需求）；回 idle 经 wake 立即重连；异常断线 5s 退避重连。
 func (c *LinxClient) Run(ctx context.Context) {
+	go c.speakLoop(ctx)
 	for {
 		if err := c.connect(ctx); err != nil {
 			log.Printf("linx: %v", err)
@@ -155,10 +163,10 @@ func (c *LinxClient) connect(ctx context.Context) error {
 	}
 	conn, _, err := websocket.Dial(ctx, c.wsURL, &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
-			"Authorization":   {"Bearer " + c.token},
+			"Authorization":    {"Bearer " + c.token},
 			"Protocol-Version": {"1"},
-			"Device-Id":       {c.Mac},
-			"Client-Id":       {c.Mac},
+			"Device-Id":        {c.Mac},
+			"Client-Id":        {c.Mac},
 		},
 	})
 	if err != nil {
@@ -174,9 +182,9 @@ func (c *LinxClient) connect(ctx context.Context) error {
 	// 协议要求连接建立后立即上报 hello（音频参数），服务器据此初始化会话；
 	// 漏发会被当空闲连接在 ~30s 后踢掉
 	if err := wsjsonWrite(ctx, conn, map[string]any{
-		"type":       "hello",
-		"version":    1,
-		"transport":  "websocket",
+		"type":      "hello",
+		"version":   1,
+		"transport": "websocket",
 		"audio_params": map[string]any{
 			"format":         "opus",
 			"sample_rate":    16000,
@@ -243,6 +251,7 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 					}
 				case "stop":
 					c.setMuted(false)
+					c.signalTTSDone()
 					if c.OnTTSState != nil {
 						c.OnTTSState(false)
 					}
@@ -289,6 +298,95 @@ func (c *LinxClient) SendAudio(ctx context.Context, opus []byte) error {
 		return nil
 	}
 	return conn.Write(ctx, websocket.MessageBinary, opus)
+}
+
+// Speak 排队一句台词（非阻塞）。exact=true 经 text_response 逐字直发
+// （报数数字/胜负等关键信息），否则 detect+text 交平台 LLM 人格发挥。
+func (c *LinxClient) Speak(text string, exact bool) {
+	select {
+	case c.speakCh <- speakReq{text, exact}:
+	default:
+		log.Printf("linx: 台词队列已满，丢弃 %q", text)
+	}
+}
+
+func (c *LinxClient) speakLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-c.speakCh:
+			c.deliverSpeak(ctx, req)
+		}
+	}
+}
+
+// deliverSpeak 发一条 detect。必须串行：新 detect 会打断未播完的 TTS
+// （spike 实测 tts stop is_aborted=true），发完等 tts stop 再放下一条。
+func (c *LinxClient) deliverSpeak(ctx context.Context, req speakReq) {
+	deadline := time.Now().Add(4 * time.Second) // Boss 进场后会话可能还在重连
+	for {
+		c.mu.Lock()
+		conn, sid := c.conn, c.sessionID
+		c.mu.Unlock()
+		if conn != nil && sid != "" {
+			c.armTTSDone()
+			msg := map[string]any{
+				"session_id": sid,
+				"type":       "listen",
+				"state":      "detect",
+			}
+			if req.exact {
+				msg["text"] = "boss_event"
+				msg["text_response"] = req.text
+			} else {
+				msg["text"] = req.text
+			}
+			b, _ := json.Marshal(msg)
+			if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+				log.Printf("linx speak: %v", err)
+				return
+			}
+			c.waitTTSDone(8 * time.Second)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("linx speak: 4s 无会话，丢弃 %q", req.text)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (c *LinxClient) armTTSDone() {
+	c.mu.Lock()
+	c.ttsDone = make(chan struct{})
+	c.mu.Unlock()
+}
+
+func (c *LinxClient) waitTTSDone(timeout time.Duration) {
+	c.mu.Lock()
+	ch := c.ttsDone
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+	}
+}
+
+func (c *LinxClient) signalTTSDone() {
+	c.mu.Lock()
+	if c.ttsDone != nil {
+		select {
+		case <-c.ttsDone:
+		default:
+			close(c.ttsDone)
+		}
+	}
+	c.mu.Unlock()
 }
 
 func (c *LinxClient) setMuted(v bool) {

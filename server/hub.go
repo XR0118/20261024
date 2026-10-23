@@ -33,10 +33,11 @@ type GameState struct {
 }
 
 // voiceLink 是 hub 对语音链路的全部依赖（LinxClient 实现）。
-// 抽接口是为了 hub 测试能注入假链路验证三阶段联动。
+// 抽接口是为了 hub 测试能注入假链路验证三阶段联动与台词层。
 type voiceLink interface {
 	SetPlaying(bool)
 	SendAudio(context.Context, []byte) error
+	Speak(text string, exact bool)
 }
 
 // browserMsg 浏览器主通道文本消息的全集。
@@ -337,6 +338,20 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 		return
 	}
 	h.pushBrowserJSON(map[string]any{"type": "boss-events", "events": evs})
+	for _, e := range evs {
+		if line, exact, ok := challengerLine(e); ok {
+			h.speak(line, exact)
+		}
+	}
+}
+
+func (h *GameHub) speak(line string, exact bool) {
+	h.mu.RLock()
+	linx := h.linx
+	h.mu.RUnlock()
+	if linx != nil {
+		linx.Speak(line, exact)
+	}
 }
 
 // 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报 + Boss 战动作。
