@@ -19,6 +19,7 @@ class Mic {
   private analyser?: AnalyserNode
   private buf?: Uint8Array
   private envelope = 0
+  private stream?: MediaStream
   state: MicState = 'idle'
 
   async start(): Promise<void> {
@@ -32,6 +33,7 @@ class Mic {
           autoGainControl: false,
         },
       })
+      this.stream = stream
       this.ctx = new AudioContext()
       const src = this.ctx.createMediaStreamSource(stream)
       this.analyser = this.ctx.createAnalyser()
@@ -42,6 +44,15 @@ class Mic {
     } catch {
       this.state = 'denied'
     }
+  }
+
+  // 麦克风单源（ADR-0002）：音量判定与语音上行共用这一个流
+  getStream(): MediaStream | undefined {
+    return this.stream
+  }
+
+  getAudioContext(): AudioContext | undefined {
+    return this.ctx
   }
 
   level(): number {
