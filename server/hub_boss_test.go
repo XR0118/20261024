@@ -281,12 +281,21 @@ func TestBossEventsAreSpoken(t *testing.T) {
 	for _, want := range []string{
 		"exact:请报出你的三位密数",
 		"llm:【BOSS 来了】",
-		"exact:零位",         // 玩家九八七对 seed-7 密数零命中的播报
 		"exact:听好了，我报：零一二", // Boss 首报恒为 012
 		"exact:认输了？明智",
 	} {
 		if !strings.Contains(spoken, want) {
 			t.Errorf("台词缺失 %q\nspoken:\n%s", want, spoken)
 		}
+	}
+	// 玩家九八七对 seed-7 密数零命中——零命中台词有三句随机变体
+	zeroHit := false
+	for _, v := range []string{"零位", "一个都没中"} {
+		if strings.Contains(spoken, "exact:"+v) {
+			zeroHit = true
+		}
+	}
+	if !zeroHit {
+		t.Errorf("零命中台词缺失\nspoken:\n%s", spoken)
 	}
 }

@@ -1,6 +1,6 @@
 // 挑战者台词层（#16）：引擎事件 → 语音台词。
 // 风格对齐 docs/prompt-persona.md 的挑战者人格（傲慢、戏精、嘴硬）。
-// 分两条通道（spike 实测结论，见 #16 评论）：
+// 分两条通道（spike 实测结论；对 ADR-0003 决策 2 的显式收窄见 ADR 修订备注）：
 //   - exact=true：本地模板 + text_response 逐字直发——数字/胜负零失真、
 //     延迟最低（关键信息事件）；
 //   - exact=false：返回【】事件标记，detect+text 交平台 LLM 人格发挥
@@ -38,13 +38,23 @@ func challengerLine(e boss.Event) (line string, exact bool, ok bool) {
 		if e.Turn == boss.TurnBoss {
 			return fmt.Sprintf("听好了，我报：%s！", speakDigits(e.Guess)), true, true
 		}
+		if e.Hits < 0 || e.Hits >= len(hitsCn) {
+			break // 越界值不应让台词层 panic
+		}
 		if e.Hits == 0 {
-			return "零位！哈哈哈，你这直觉和你的嗓门一样，毫无准头！", true, true
+			return pick([]string{
+				"零位！哈哈哈，你这直觉和你的嗓门一样，毫无准头！",
+				"零位？我在数字里泡大的时候你还在学数数！",
+				"一个都没中！你的运气被嗓子借走了吧？",
+			}), true, true
 		}
 		return fmt.Sprintf("哼，猜中%s位，也就这样了。", hitsCn[e.Hits]), true, true
 	case boss.KindAttack:
 		return "全中！哈哈哈——接我这招！！", true, true
 	case boss.KindReveal:
+		if e.Position < 1 || e.Position > 3 || e.Digit < 0 || e.Digit > 9 {
+			break
+		}
 		return fmt.Sprintf("算你走运！看好了，我的第%s位是%s。", digitCn[e.Position], digitCn[e.Digit]), true, true
 	case boss.KindSwapAccepted:
 		return "【换数】玩家换好了新密数，Boss 战继续，你先猜", false, true

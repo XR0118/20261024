@@ -12,10 +12,9 @@ import (
 	"github.com/coder/websocket"
 )
 
-// 一次性 spike（#16）：实连灵矽验证两件事——
-//  1. listen detect 仅带 text（无 text_response）是否触发平台 LLM 回复
-//  2. detect 带 text_response 是否不经 LLM 直发 TTS
-// 运行：LINGX_SPIKE=1 go test -run SpikeDetect -v ；结论记录进 issue 后删除本文件。
+// 台词通道协议的在线回归 spike（#16）：验证 detect+text 触发平台 LLM、
+// text_response 逐字直发、新 detect 打断未播完的 TTS。
+// 默认 skip；怀疑灵矽协议漂移时 LINGX_SPIKE=1 go test -run SpikeDetect -v 复跑。
 func TestSpikeDetect(t *testing.T) {
 	if os.Getenv("LINGX_SPIKE") == "" {
 		t.Skip("set LINGX_SPIKE=1 to run the live lingxi spike")
