@@ -1,6 +1,5 @@
-// Boss 阶段语音输入的解析与路由：中文数字口语变体 → Secret，
-// 关键词 → 意图。纯函数，不碰 WS——hub（T3）在 Boss 阶段先调这里，
-// 落空才轮到跑酷指令的关键词路由。
+// Boss 阶段语音输入的解析与路由：中文数字口语变体 → 密数，关键词 → 意图。
+// 纯函数，不碰 WS。
 package boss
 
 import (
@@ -24,19 +23,14 @@ type Input struct {
 	Intent Intent
 }
 
-// RouteInput Boss 阶段语音输入的统一路由（spec 顺序：先数字解析、再关键词）：
-//   - 携带数字且构成三位不重复报数 → Guess
-//   - 携带数字但非法（位数不对/数字重复）→ 错误（中文，可直接 TTS）
-//   - 不带数字 → 关键词意图；都不是则零值放行（闲聊交给上层人格）
-//
-// 中文里「一」常作量词（换一个数字/来一局），因此报数尝试的判定
-// 区分阿拉伯数字、连续中文数字与「十/百」量词，单个中文数字不成句不算。
+// RouteInput 统一路由 Boss 阶段的 STT 文本：先数字解析、再关键词；
+// 携带数字但不构成合法报数时返回可直接 TTS 的中文拒绝。
 func RouteInput(text string) (Input, error) {
 	s := stripSeparators(stripLeadWords(strings.TrimSpace(text)))
 	if s == "" {
 		return Input{}, nil
 	}
-	if !numberAttempt(s) {
+	if !isGuessAttempt(s) {
 		return keywords(s), nil
 	}
 	if strings.ContainsAny(s, "百十") {
@@ -60,13 +54,14 @@ func RouteInput(text string) (Input, error) {
 	return secretFromDigits(ds)
 }
 
-// numberAttempt 判断语句是否构成一次报数尝试：
-// 阿拉伯数字或「十/百」出现即算；中文数字需连续两位以上（或独字成句）。
-func numberAttempt(s string) bool {
+// isGuessAttempt 判断语句是否构成一次报数尝试。
+// 中文「一」常作量词（换一个数字/来一局），孤立的中文数字不能算；
+// 只有阿拉伯数字、「十/百」量词或连续两位以上中文数字才算数。
+func isGuessAttempt(s string) bool {
 	run, maxRun := 0, 0
 	for _, r := range s {
 		switch {
-		case r >= '0' && r <= '9', r >= '０' && r <= '９':
+		case isArabicDigit(r):
 			return true
 		case r == '百' || r == '十':
 			return true
@@ -87,8 +82,10 @@ func numberAttempt(s string) bool {
 	return maxRun == 1 && len([]rune(s)) == 1
 }
 
+// 全角空格是中文 STT 的高频分隔（逐字报数「三　七　八」），漏掉会被当闲聊。
 var separators = strings.NewReplacer(
-	" ", "", "-", "", "—", "", "、", "", ",", "", "，", "", "·", "",
+	" ", "", "　", "", "\u00a0", "", "-", "", "—", "",
+	"、", "", ",", "", "，", "", "·", "",
 )
 
 func stripSeparators(s string) string { return separators.Replace(s) }
@@ -106,31 +103,24 @@ func secretFromDigits(ds []int) (Input, error) {
 	return Input{Guess: s}, nil
 }
 
-// keywords 关键词意图。先查投降，再查放弃换数（「放弃换数」同时命中
-// 换数，放弃语义优先），最后换数。
+// keywords 关键词意图。「放弃换数」同时命中换数词表，放弃语义须优先判定。
 func keywords(s string) Input {
-	for _, kw := range []string{"投降", "认输", "我输了", "不玩了"} {
+	for _, kw := range []string{"投降", "认输", "我输了", "不玩了", "不想玩"} {
 		if strings.Contains(s, kw) {
 			return Input{Intent: IntentSurrender}
 		}
 	}
-	for _, kw := range []string{"不换", "不用了", "放弃", "算了", "就这个"} {
+	for _, kw := range []string{"不换", "别换", "不用了", "放弃", "算了", "就这个"} {
 		if strings.Contains(s, kw) {
 			return Input{Intent: IntentDeclineSwap}
 		}
 	}
-	for _, kw := range []string{"换数", "换个数", "换一个数", "换个数字", "换一个数字", "重新报"} {
+	for _, kw := range []string{"换数", "换个数", "换一个数", "换个数字", "换一个数字", "重新报", "来一个数"} {
 		if strings.Contains(s, kw) {
 			return Input{Intent: IntentSwap}
 		}
 	}
 	return Input{}
-}
-
-// stripLeadWords 剥掉「我猜/报数/密数是」这类口语前缀，循环到剥不动为止。
-var leadWords = []string{
-	"我的密数是", "密数是", "密数", "答案是", "答案",
-	"我猜", "我报", "报数", "换个说法", "报", "猜", "是",
 }
 
 func stripLeadWords(s string) string {
@@ -147,16 +137,27 @@ func stripLeadWords(s string) string {
 	return s
 }
 
+// leadWords 报数/密数上报语句的口语前缀。
+var leadWords = []string{
+	"我的密数是", "密数是", "密数", "答案是", "答案",
+	"我猜", "我报", "报数", "换个说法", "报", "猜", "是",
+}
+
 var zhDigits = map[rune]int{
 	'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
 	'五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+	'幺': 1, // 电话/军语逐字读法（幺三八=138）
+}
+
+func isArabicDigit(r rune) bool {
+	return r >= '0' && r <= '9' || r >= '０' && r <= '９' // 半角与全角
 }
 
 func digitVal(r rune) (int, bool) {
 	switch {
 	case r >= '0' && r <= '9':
 		return int(r - '0'), true
-	case r >= '０' && r <= '９': // 全角
+	case r >= '０' && r <= '９':
 		return int(r - '０'), true
 	default:
 		v, ok := zhDigits[r]

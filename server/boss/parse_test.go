@@ -18,7 +18,9 @@ func TestRouteInputParsesGuessVariants(t *testing.T) {
 		{"密数是四八三", "483"}, // 密数上报与报数共用同一解析
 		{"三百零八", "308"},
 		{"一百二十三", "123"},
-		{"三百五", "350"}, // 口语省“十”：三百五=350
+		{"三百五", "350"},   // 口语省“十”：三百五=350
+		{"幺三八", "138"},   // 电话/军语逐字读法
+		{"三　七　八", "378"}, // 全角空格分隔（中文 STT 高频）
 	}
 	for _, c := range cases {
 		in, err := RouteInput(c.text)
@@ -48,22 +50,22 @@ func TestRouteInputRejectsInvalidGuesses(t *testing.T) {
 
 // 不带数字的语句：零值放行（闲聊交给上层），不误报非法报数。
 func TestRouteInputPassesThroughNonNumberStatements(t *testing.T) {
-	for _, text := range []string{"今天天气怎么样", "你好小智", "我十分想认输"} {
-		// “十分”含“十”但不是报数——位置读法解析失败须放行走关键词
-		if text == "我十分想认输" {
-			in, err := RouteInput(text)
-			if err != nil {
-				t.Fatalf("RouteInput(%q) 不应报错: %v", text, err)
-			}
-			if in.Intent != IntentSurrender {
-				t.Fatalf("RouteInput(%q) 应识别为投降，got %+v", text, in)
-			}
-			continue
-		}
+	for _, text := range []string{"今天天气怎么样", "你好小智"} {
 		in, err := RouteInput(text)
 		if err != nil || in != (Input{}) {
 			t.Errorf("RouteInput(%q) = (%+v, %v), want 零值放行", text, in, err)
 		}
+	}
+}
+
+// 「十分」含「十」但不是报数——位置读法解析失败且无数字时须放行走关键词。
+func TestPositionalProseFallsToIntent(t *testing.T) {
+	in, err := RouteInput("我十分想认输")
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if in.Intent != IntentSurrender {
+		t.Fatalf("应识别为投降，got %+v", in)
 	}
 }
 
@@ -75,10 +77,15 @@ func TestRouteInputIntents(t *testing.T) {
 		{"投降", IntentSurrender},
 		{"我认输了", IntentSurrender},
 		{"我输了", IntentSurrender},
+		{"不想玩了", IntentSurrender}, // 口语“想”字隔断，靠“不想玩”命中
+		{"我不想玩了", IntentSurrender},
 		{"换个数", IntentSwap},
 		{"换一个数字", IntentSwap},
 		{"重新报", IntentSwap},
+		{"重新来一个数", IntentSwap},
+		{"再来一个数", IntentSwap},
 		{"不换了", IntentDeclineSwap},
+		{"别换了", IntentDeclineSwap},
 		{"算了", IntentDeclineSwap},
 		{"放弃", IntentDeclineSwap},
 		{"放弃换数", IntentDeclineSwap}, // 同时含“换数”，放弃优先
