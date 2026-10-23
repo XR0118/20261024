@@ -62,6 +62,9 @@ type Event struct {
 	Outcome    Outcome `json:"outcome,omitempty"`
 	Coins      int     `json:"coins"`       // 本局原额（0 金币对局也须携带）
 	FinalCoins int     `json:"final_coins"` // 结算额
+	// Message 只由 hub 侧的合成事件（索要密数/报数纠错/换数提示）携带，
+	// 引擎数值事件不填——人格台词由台词层另行生成。
+	Message string `json:"message,omitempty"`
 }
 
 // Battle 一场 Boss 战的完整状态。非并发安全：hub 侧串行调用。
