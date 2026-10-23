@@ -5,7 +5,8 @@ import { getPlayer, setPlayerName } from '../player'
 const W = 960
 const H = 540
 
-type Row = { ID: string; Name: string; BestDist: number; TotalCoins: number; Runs: number }
+// 字段名与后端 JSON tag（小写下划线）严格一致，否则渲染 undefined
+type Row = { id: string; name: string; best_dist: number; total_coins: number; runs: number }
 
 // 初始页：排行榜 + 开始入口。语音指令（game-action）在本页即可触发开局。
 export class BootScene extends Phaser.Scene {
@@ -98,8 +99,8 @@ export class BootScene extends Phaser.Scene {
     }
     this.rows.forEach((r, i) => {
       const medal = ['🥇', '🥈', '🥉'][i] ?? `${i + 1}.`
-      const tag = r.ID === me.id ? ' ◂ 你' : ''
-      lines.push(`${medal}  ${r.Name.padEnd(8, '　')} ${String(r.BestDist).padStart(4, ' ')} m   💰${r.TotalCoins}${tag}`)
+      const tag = r.id === me.id ? ' ◂ 你' : ''
+      lines.push(`${medal}  ${r.name.padEnd(8, '　')} ${String(r.best_dist).padStart(4, ' ')} m   💰${r.total_coins}${tag}`)
     })
     this.boardText.setText(lines.join('\n')).setPosition(
       W / 2 - this.boardText.width / 2,
