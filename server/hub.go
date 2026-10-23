@@ -22,12 +22,14 @@ type GameState struct {
 }
 
 type GameHub struct {
-	mu    sync.RWMutex
-	state GameState
-	conn  *websocket.Conn
-	brain *Brain
-	linx  *LinxClient
-	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	mu           sync.RWMutex
+	state        GameState
+	conn         *websocket.Conn
+	brain        *Brain
+	linx         *LinxClient
+	bconn        *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	pendingStart []map[string]any
+	startTimer   *time.Timer
 }
 
 func NewGameHub(brain *Brain) *GameHub {
@@ -39,15 +41,50 @@ func (h *GameHub) SetLinxClient(lc *LinxClient) {
 	lc.OnSTT = h.handleSTT
 	lc.OnTTSFrame = h.pushTTSFrame
 	lc.OnVoiceState = h.pushVoiceState
+	lc.OnTTSStop = h.flushPendingStart
 }
 
 // stt 文本直达游戏动作（ADR-0002 主线：进程内，零外部依赖）。
+// 开局类动作（start/load_level）不立即放行：先推 prepare 让浏览器进入
+// "主持人发令中"过渡，等本次播报 tts stop（或超时兜底）再推真正动作，
+// 否则游戏比"三二一开跑"的喊话先跑。
 func (h *GameHub) handleSTT(text string) {
 	actions := gameActions(classify(text))
 	if len(actions) == 0 {
 		return
 	}
+	name, _ := actions[0]["action"].(string)
+	if name == "start" || name == "load_level" {
+		if h.startTimer != nil {
+			h.startTimer.Stop()
+		}
+		// 平台偶发不回 TTS 时的兜底，玩家不会被卡在过渡页
+		h.startTimer = time.AfterFunc(3500*time.Millisecond, h.flushPendingStart)
+		h.mu.Lock()
+		h.pendingStart = actions
+		h.mu.Unlock()
+		h.pushBrowserJSON(map[string]any{
+			"type":    "game-action",
+			"actions": []map[string]any{{"action": "prepare"}},
+		})
+		return
+	}
 	h.pushBrowserJSON(map[string]any{"type": "game-action", "actions": actions})
+}
+
+func (h *GameHub) flushPendingStart() {
+	h.mu.Lock()
+	pending := h.pendingStart
+	h.pendingStart = nil
+	if h.startTimer != nil {
+		h.startTimer.Stop()
+		h.startTimer = nil
+	}
+	h.mu.Unlock()
+	if pending == nil {
+		return
+	}
+	h.pushBrowserJSON(map[string]any{"type": "game-action", "actions": pending})
 }
 
 func (h *GameHub) pushTTSFrame(opus []byte) {

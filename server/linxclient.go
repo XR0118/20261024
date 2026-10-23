@@ -28,6 +28,7 @@ type LinxClient struct {
 	OnSTT      func(text string)
 	OnTTSFrame func(opus []byte)
 	OnVoiceState func(listening bool)
+	OnTTSStop  func() // 一次播报结束（主持人喊话完毕），用于放行开局动作
 }
 
 func NewLinxClient(mac string) *LinxClient {
@@ -239,6 +240,9 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 					c.setListening(false)
 				case "stop":
 					c.setMuted(false)
+					if c.OnTTSStop != nil {
+						c.OnTTSStop()
+					}
 					c.mu.Lock()
 					playing := c.playing
 					c.mu.Unlock()

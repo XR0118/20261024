@@ -12,10 +12,17 @@ type Row = { id: string; name: string; best_dist: number; total_coins: number; r
 export class BootScene extends Phaser.Scene {
   private rows: Row[] = []
   private boardText!: Phaser.GameObjects.Text
+  private hintText!: Phaser.GameObjects.Text
   private meText!: Phaser.GameObjects.Text
   private lastReport = 0
   private onGameAction = (ev: Event) => {
     const a = (ev as CustomEvent).detail as { action: string; params: { seed?: number } }
+    if (a.action === 'prepare') {
+      // 主持人正在喊"三二一"，等 tts 播完（或 3.5s 兜底）才收到 start
+      this.hintText.setText('🎙 主持人正在发令，马上开跑…')
+      this.tweens.add({ targets: this.hintText, alpha: 0.4, duration: 400, yoyo: true, repeat: -1 })
+      return
+    }
     if (a.action === 'start') this.startGame(undefined)
     if (a.action === 'load_level') this.startGame(Number(a.params?.seed ?? Math.random() * 1e9))
   }
@@ -43,7 +50,7 @@ export class BootScene extends Phaser.Scene {
       lineSpacing: 8,
     })
 
-    this.add
+    this.hintText = this.add
       .text(W / 2, 448, '喊「你好小智」唤醒，再说「开始游戏」', {
         color: '#ffe6a7',
         fontSize: '20px',
