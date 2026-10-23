@@ -43,6 +43,8 @@ export class PlayScene extends Phaser.Scene {
     this.seed = data.seed ?? this.seed
     this.finished = false
     this.coins = 0
+    // Scene 实例跨 restart 复用，体力必须在这里复位，否则带着上局的空条开局
+    this.stamina = 1
   }
 
   create() {
@@ -129,7 +131,7 @@ export class PlayScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setAlpha(0.4)
     this.staminaBar = this.add
-      .rectangle(W - pad - 160, pad + 30, 1, 10, 0xffd23f)
+      .rectangle(W - pad - 160, pad + 30, 160, 10, 0xffd23f)
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
     this.coinText = this.add
@@ -173,6 +175,13 @@ export class PlayScene extends Phaser.Scene {
       this.playerBody.setAccelerationY(0)
     }
     this.playerBody.setMaxVelocity(600, 520)
+
+    // 飞行上限：角色不许飞出屏幕（顶住后清零升速，继续喊只会白耗体力）
+    const CEILING = 60
+    if (this.player.y < CEILING) {
+      this.player.y = CEILING
+      if (this.playerBody.velocity.y < 0) this.playerBody.setVelocityY(0)
+    }
 
     this.staminaBar.width = Math.max(1, this.stamina * 160)
     this.staminaBar.fillColor = this.stamina < 0.3 ? 0xef476f : 0xffd23f

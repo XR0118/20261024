@@ -34,7 +34,8 @@ export function makeLevel(seed: number): Level {
   let x = 600
   const halfWidth = 2300 // 障碍物从后半程开始出现
   while (x < 4600) {
-    const gap = 120 + rand() * 160
+    // 喷气滞空可以延伸水平距离，坑可以更深更宽（上限 380px：纯跳 329px + 空中补气）
+    const gap = 130 + rand() * 250
     const seg = 500 + rand() * 700
     ground.push([x + gap, seg, 480])
     if (rand() > 0.4) {
