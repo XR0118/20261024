@@ -1,46 +1,13 @@
 import Phaser from 'phaser'
 import { levelToPower, mic } from '../audio/mic'
 import { reportGameState, voiceListening } from '../audio/voice'
+import { makeLevel, type Level } from '../game/level'
+import { getPlayer } from '../player'
 
 const W = 960
 const H = 540
 // 自动跑酷：角色恒定向右，声音只负责跳（题眼玩法：喊得越响跳得越高）
 const RUN_SPEED = 240
-
-type Level = {
-  ground: [number, number, number][]
-  platforms: [number, number, number][]
-  worldWidth: number
-}
-
-// mulberry32：种子化 PRNG，同一 seed 生成同一关卡（L2 由服务端 seed 驱动）
-function mulberry32(seed: number) {
-  return () => {
-    seed |= 0
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-// 关卡数值围绕跳跃可达性设计：最大跳高 ≈ v²/2g ≈ 240px，滞空水平 ≈ 280px
-function makeLevel(seed: number): Level {
-  const rand = mulberry32(seed)
-  const ground: [number, number, number][] = [[0, 600, 480]]
-  const platforms: [number, number, number][] = []
-  let x = 600
-  while (x < 4600) {
-    const gap = 120 + rand() * 200
-    const seg = 500 + rand() * 700
-    ground.push([x + gap, seg, 480])
-    if (rand() > 0.4) platforms.push([x + gap * 0.5, 140 + rand() * 80, 300 + rand() * 100])
-    if (rand() > 0.5) platforms.push([x + gap + seg * 0.4, 150 + rand() * 80, 260 + rand() * 120])
-    x += gap + seg
-  }
-  ground.push([x + 200, 800, 480])
-  return { ground, platforms, worldWidth: x + 1000 }
-}
 
 export class PlayScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle
@@ -49,17 +16,13 @@ export class PlayScene extends Phaser.Scene {
   private hudText!: Phaser.GameObjects.Text
   private jumpKey!: Phaser.Input.Keyboard.Key
   private deaths = 0
+  private coins = 0
+  private coinText!: Phaser.GameObjects.Text
+  private coinGroup!: Phaser.Physics.Arcade.StaticGroup
   private finished = false
   private seed = 20261024
   private level!: Level
   private lastReport = 0
-  private onGameAction = (ev: Event) => {
-    const a = (ev as CustomEvent).detail as { action: string; params: { seed?: number } }
-    if (a.action === 'start') this.scene.restart({ deaths: this.deaths })
-    if (a.action === 'load_level') {
-      this.scene.restart({ deaths: this.deaths, seed: Number(a.params?.seed ?? Math.random() * 1e9) })
-    }
-  }
 
   constructor() {
     super('play')
@@ -68,8 +31,8 @@ export class PlayScene extends Phaser.Scene {
   init(data: { deaths?: number; seed?: number }) {
     this.deaths = data.deaths ?? 0
     this.seed = data.seed ?? this.seed
-    // scene.restart 复用 Scene 实例，通关标志必须在此复位
     this.finished = false
+    this.coins = 0
   }
 
   create() {
@@ -89,6 +52,8 @@ export class PlayScene extends Phaser.Scene {
     this.playerBody.setCollideWorldBounds(false)
     for (const s of solids) this.physics.add.collider(this.player, s)
 
+    this.spawnCoins()
+
     // 终点旗
     this.add.rectangle(this.level.worldWidth - 60, 480 - 90, 8, 180, 0xef7d57)
     this.add
@@ -98,14 +63,21 @@ export class PlayScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1)
 
     this.jumpKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
-
-    // 语音意图 → 游戏动作（voice.ts 派发的 DOM 事件）；shutdown 必须摘除防泄漏
-    window.addEventListener('game-action', this.onGameAction)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      window.removeEventListener('game-action', this.onGameAction)
-    })
-
     this.buildHud()
+  }
+
+  private spawnCoins() {
+    this.coinGroup = this.physics.add.staticGroup()
+    for (const [x, y] of this.level.coins) {
+      const c = this.add.circle(x, y, 11, 0xffd23f)
+      c.setStrokeStyle(2, 0xb8860b)
+      this.coinGroup.add(c)
+    }
+    this.physics.add.overlap(this.player, this.coinGroup, (_, obj) => {
+      obj.destroy()
+      this.coins++
+      this.coinText.setText(`💰 ${this.coins}`)
+    })
   }
 
   private solid(x: number, w: number, topY: number, h: number, color: number) {
@@ -128,15 +100,10 @@ export class PlayScene extends Phaser.Scene {
     this.hudText = this.add
       .text(pad, pad, '', { color: '#ffffff', fontSize: '16px' })
       .setScrollFactor(0)
-    if (mic.state !== 'running') {
-      this.add
-        .text(W / 2, 80, '麦克风不可用，按住空格键模拟喊声', {
-          color: '#ff6b6b',
-          fontSize: '18px',
-        })
-        .setOrigin(0.5)
-        .setScrollFactor(0)
-    }
+    this.coinText = this.add
+      .text(W - pad, pad + 26, '💰 0', { color: '#ffd23f', fontSize: '18px' })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
   }
 
   update(time: number) {
@@ -174,8 +141,19 @@ export class PlayScene extends Phaser.Scene {
     }
     if (this.player.x > this.level.worldWidth - 80) {
       this.finished = true
-      reportGameState({ playing: false, dist, deaths: this.deaths, won: true })
-      this.hudText.setText(`通关！摔死 ${this.deaths} 次`)
+      this.reportRun(dist)
+      this.hudText.setText(`通关！摔死 ${this.deaths} 次 · 💰 ${this.coins}`)
+      this.time.delayedCall(2000, () => this.scene.start('boot'))
     }
+  }
+
+  // 结算上报：金币累计与最远距离由后端持久化（关闭页面不丢）
+  private reportRun(dist: number) {
+    const me = getPlayer()
+    void fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: me.id, name: me.name, dist, coins: this.coins }),
+    })
   }
 }

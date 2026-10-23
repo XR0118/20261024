@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { PlayScene } from './scenes/PlayScene'
+import { BootScene } from './scenes/BootScene'
 import { mic } from './audio/mic'
 import { startVoice } from './audio/voice'
 
@@ -13,7 +14,7 @@ const game = new Phaser.Game({
     arcade: { gravity: { x: 0, y: 1400 }, debug: false },
   },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [PlayScene],
+  scene: [BootScene, PlayScene],
 })
 
 // 调试钩子：chrome 自动化读取玩家状态用
