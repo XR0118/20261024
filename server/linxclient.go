@@ -23,16 +23,18 @@ type LinxClient struct {
 	sessionID  string
 	mu         sync.Mutex
 	muted      bool // TTS 播放期间暂停上行，防止扬声器串回麦克风
+	playing    bool // 跑酷进行中：无语音需求，停上行，TTS 收尾后主动断会话（按会话时长计费）
+	wake       chan struct{}
 	OnSTT      func(text string)
 	OnTTSFrame func(opus []byte)
 	OnVoiceState func(listening bool)
 }
 
-const otaURL = "https://xrobo.qiniuapi.com/v1/ota/"
-
 func NewLinxClient(mac string) *LinxClient {
-	return &LinxClient{Mac: mac}
+	return &LinxClient{Mac: mac, wake: make(chan struct{}, 1)}
 }
+
+const otaURL = "https://xrobo.qiniuapi.com/v1/ota/"
 
 type otaResponse struct {
 	Websocket struct {
@@ -88,17 +90,61 @@ func (c *LinxClient) ota(ctx context.Context) error {
 	return nil
 }
 
-// Run 阻塞维持会话，断线以 5s 退避重连（OTA 会换发新 token）。
+// Run 阻塞维持会话。playing 期间主动断开并 hold（不重连——会话按秒计费，
+// 跑酷中没有语音需求）；回 idle 经 wake 立即重连；异常断线 5s 退避重连。
 func (c *LinxClient) Run(ctx context.Context) {
 	for {
 		if err := c.connect(ctx); err != nil {
 			log.Printf("linx: %v", err)
 		}
+		c.mu.Lock()
+		playing := c.playing
+		c.mu.Unlock()
+		if playing {
+			log.Printf("linx: holding off (playing), waiting for idle")
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.wake:
+			}
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.wake:
 		case <-time.After(5 * time.Second):
 		}
+	}
+}
+
+// SetPlaying 切换游戏阶段。playing：停上行并断会话（TTS 在播则等播完由 tts 状态机断）；
+// idle：连接还在就补发 listen 恢复监听，已断则经 wake 立即重连。
+func (c *LinxClient) SetPlaying(playing bool) {
+	c.mu.Lock()
+	c.playing = playing
+	conn := c.conn
+	muted := c.muted
+	c.mu.Unlock()
+
+	if playing {
+		c.setListening(false)
+		if conn != nil && !muted {
+			log.Printf("linx: playing, closing session immediately")
+			_ = conn.Close(websocket.StatusNormalClosure, "playing")
+		}
+		return
+	}
+
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+	if conn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = c.sendListenStart(ctx, conn)
+		c.setListening(true)
 	}
 }
 
@@ -193,6 +239,14 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 					c.setListening(false)
 				case "stop":
 					c.setMuted(false)
+					c.mu.Lock()
+					playing := c.playing
+					c.mu.Unlock()
+					if playing {
+						// 跑酷中无语音需求：倒计时播完即断，会话按秒计费不空烧
+						log.Printf("linx: playing, closing session to save usage")
+						return nil
+					}
 					if err := c.sendListenStart(ctx, conn); err != nil {
 						return err
 					}
@@ -218,12 +272,13 @@ func (c *LinxClient) sendListenStart(ctx context.Context, conn *websocket.Conn) 
 	})
 }
 
-// SendAudio 转发浏览器编码的 OPUS 帧。TTS 播放期间丢弃（防回音）。
+// SendAudio 转发浏览器编码的 OPUS 帧。TTS 播放期间（防回音）与跑酷中（无语音需求）丢弃。
 func (c *LinxClient) SendAudio(ctx context.Context, opus []byte) error {
 	c.mu.Lock()
 	conn, muted := c.conn, c.muted
+	playing := c.playing
 	c.mu.Unlock()
-	if conn == nil || muted {
+	if conn == nil || muted || playing {
 		return nil
 	}
 	return conn.Write(ctx, websocket.MessageBinary, opus)
