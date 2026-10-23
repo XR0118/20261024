@@ -4,8 +4,7 @@ All changes reach `main` through a pull request; GitHub rejects direct pushes to
 
 1. Branch from `main` as `<type>/<topic>` (`feat/`, `fix/`, `docs/`, `chore/`).
 2. Commit, push, and open a PR against `main` (`gh pr create`). Done when the PR is open on GitHub.
-3. Review the PR with the `code-review` skill — a fresh subagent, never the session that wrote the change. Blocking findings get fixed and re-reviewed; otherwise proceed.
-4. Squash-merge (`gh pr merge --squash --delete-branch`), then `git checkout main && git pull`. Done when local `main` matches `origin/main`.
+3. The owner merges the PR on GitHub. Afterwards `git checkout main && git pull` (or reset to `origin/main` after a squash merge). Done when local `main` matches `origin/main`.
 
 ## Agent skills
 
