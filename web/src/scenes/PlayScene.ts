@@ -21,6 +21,8 @@ const PLATFORMS: ReadonlyArray<readonly [number, number, number]> = [
   [3550, 160, 280],
 ]
 const WORLD_W = 5440
+// 自动跑酷：角色恒定向右，声音只负责跳（题眼玩法：喊得越响跳得越高）
+const RUN_SPEED = 240
 
 export class PlayScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle
@@ -29,6 +31,7 @@ export class PlayScene extends Phaser.Scene {
   private hudText!: Phaser.GameObjects.Text
   private jumpKey!: Phaser.Input.Keyboard.Key
   private deaths = 0
+  private finished = false
 
   constructor() {
     super('play')
@@ -36,6 +39,8 @@ export class PlayScene extends Phaser.Scene {
 
   init(data: { deaths?: number }) {
     this.deaths = data.deaths ?? 0
+    // scene.restart 复用 Scene 实例，通关标志必须在此复位
+    this.finished = false
   }
 
   create() {
@@ -98,11 +103,19 @@ export class PlayScene extends Phaser.Scene {
   }
 
   update() {
+    if (this.finished) {
+      this.playerBody.setVelocity(0, 0)
+      return
+    }
+
     let level = mic.level()
     // 空格键作为调试备选，与真实喊声取较大者
     if (this.jumpKey.isDown) level = Math.max(level, 0.55)
 
     this.micFill.width = Math.max(1, level * 160)
+
+    // 每帧重设横向速度：撞平台侧面被吃掉的 vx 立即恢复，卡墙即提示该跳了
+    this.playerBody.setVelocityX(RUN_SPEED)
 
     const power = levelToPower(level)
     if (power !== null && this.playerBody.blocked.down) {
@@ -119,6 +132,7 @@ export class PlayScene extends Phaser.Scene {
       this.scene.restart({ deaths: this.deaths })
     }
     if (this.player.x > WORLD_W - 80) {
+      this.finished = true
       this.hudText.setText(`通关！摔死 ${this.deaths} 次`)
     }
   }
