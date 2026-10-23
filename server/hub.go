@@ -39,13 +39,25 @@ func (h *GameHub) SetLinxClient(lc *LinxClient) {
 	lc.OnSTT = h.handleSTT
 	lc.OnTTSFrame = h.pushTTSFrame
 	lc.OnVoiceState = h.pushVoiceState
+	lc.OnTTSState = func(playing bool) {
+		h.pushBrowserJSON(map[string]any{"type": "tts-state", "playing": playing})
+	}
 }
 
 // stt 文本直达游戏动作（ADR-0002 主线：进程内，零外部依赖）。
+// 开局动作配一条 prepare 先行：何时真正开局由浏览器决定——只有它知道
+// 本地播放队列何时排空（平台的 tts stop 只代表下发完，不等于播完）。
 func (h *GameHub) handleSTT(text string) {
 	actions := gameActions(classify(text))
 	if len(actions) == 0 {
 		return
+	}
+	name, _ := actions[0]["action"].(string)
+	if name == "start" || name == "load_level" {
+		h.pushBrowserJSON(map[string]any{
+			"type":    "game-action",
+			"actions": []map[string]any{{"action": "prepare"}},
+		})
 	}
 	h.pushBrowserJSON(map[string]any{"type": "game-action", "actions": actions})
 }

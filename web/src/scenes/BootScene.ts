@@ -1,22 +1,37 @@
 import Phaser from 'phaser'
-import { reportGameState } from '../audio/voice'
+import { reportGameState, resetTTSTracking, ttsArrived, ttsArrivedAndDone } from '../audio/voice'
 import { getPlayer, setPlayerName } from '../player'
 
 const W = 960
 const H = 540
 
-type Row = { ID: string; Name: string; BestDist: number; TotalCoins: number; Runs: number }
+// 字段名与后端 JSON tag（小写下划线）严格一致，否则渲染 undefined
+type Row = { id: string; name: string; best_dist: number; total_coins: number; runs: number }
 
 // 初始页：排行榜 + 开始入口。语音指令（game-action）在本页即可触发开局。
 export class BootScene extends Phaser.Scene {
   private rows: Row[] = []
   private boardText!: Phaser.GameObjects.Text
+  private hintText!: Phaser.GameObjects.Text
   private meText!: Phaser.GameObjects.Text
   private lastReport = 0
+  private pendingSeed: number | undefined | null = null // null=未挂起；undefined=start；数字=load_level seed
+  private prepareAt = 0
   private onGameAction = (ev: Event) => {
     const a = (ev as CustomEvent).detail as { action: string; params: { seed?: number } }
-    if (a.action === 'start') this.startGame(undefined)
-    if (a.action === 'load_level') this.startGame(Number(a.params?.seed ?? Math.random() * 1e9))
+    if (a.action === 'prepare') {
+      this.hintText.setText('🎙 主持人正在发令，马上开跑…')
+      this.tweens.add({ targets: this.hintText, alpha: 0.4, duration: 400, yoyo: true, repeat: -1 })
+      return
+    }
+    if (a.action === 'start') {
+      this.pendingSeed = undefined
+      this.prepareAt = this.time.now
+    }
+    if (a.action === 'load_level') {
+      this.pendingSeed = Number(a.params?.seed ?? Math.random() * 1e9)
+      this.prepareAt = this.time.now
+    }
   }
 
   constructor() {
@@ -42,7 +57,7 @@ export class BootScene extends Phaser.Scene {
       lineSpacing: 8,
     })
 
-    this.add
+    this.hintText = this.add
       .text(W / 2, 448, '喊「你好小智」唤醒，再说「开始游戏」', {
         color: '#ffe6a7',
         fontSize: '20px',
@@ -77,6 +92,18 @@ export class BootScene extends Phaser.Scene {
   }
 
   update(time: number) {
+    // 开局挂起：必须"播报来过且已放完"才开局——只看"没在播"会在台词
+    // 还没生成时误判，开局断连就会掐掉即将到来的倒计时。
+    // 播报始终不来（4s）或播得异常长（12s）时兜底放行。
+    if (this.pendingSeed !== null) {
+      const elapsed = time - this.prepareAt
+      if (ttsArrivedAndDone() || elapsed > 12000 || (elapsed > 4000 && !ttsArrived())) {
+        const seed = this.pendingSeed
+        this.pendingSeed = null
+        resetTTSTracking()
+        this.startGame(seed ?? undefined)
+      }
+    }
     if (time - this.lastReport > 500) {
       this.lastReport = time
       reportGameState({ playing: false, dist: 0, deaths: 0, won: false })
@@ -98,8 +125,8 @@ export class BootScene extends Phaser.Scene {
     }
     this.rows.forEach((r, i) => {
       const medal = ['🥇', '🥈', '🥉'][i] ?? `${i + 1}.`
-      const tag = r.ID === me.id ? ' ◂ 你' : ''
-      lines.push(`${medal}  ${r.Name.padEnd(8, '　')} ${String(r.BestDist).padStart(4, ' ')} m   💰${r.TotalCoins}${tag}`)
+      const tag = r.id === me.id ? ' ◂ 你' : ''
+      lines.push(`${medal}  ${r.name.padEnd(8, '　')} ${String(r.best_dist).padStart(4, ' ')} m   💰${r.total_coins}${tag}`)
     })
     this.boardText.setText(lines.join('\n')).setPosition(
       W / 2 - this.boardText.width / 2,

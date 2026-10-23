@@ -13,6 +13,8 @@ export type Level = {
   ground: [number, number, number][]
   platforms: [number, number, number][]
   coins: [number, number][]
+  // 后半程空中横杆：红杆，触碰即局终。挂在跳跃弧线上部，低跳可从下方钻过
+  hazards: [number, number, number, number][] // [x, topY, w, h]
   worldWidth: number
 }
 
@@ -22,6 +24,7 @@ export function makeLevel(seed: number): Level {
   const ground: [number, number, number][] = [[0, 600, 480]]
   const platforms: [number, number, number][] = []
   const coins: [number, number][] = []
+  const hazards: [number, number, number, number][] = []
   // 币撒在地面段上方的跳跃弧线上，鼓励"为币而喊"
   const coinArc = (cx: number, cy: number, n: number) => {
     for (let i = 0; i < n; i++) {
@@ -29,8 +32,10 @@ export function makeLevel(seed: number): Level {
     }
   }
   let x = 600
+  const halfWidth = 2300 // 障碍物从后半程开始出现
   while (x < 4600) {
-    const gap = 120 + rand() * 200
+    // 喷气滞空可以延伸水平距离，坑可以更深更宽（上限 380px：纯跳 329px + 空中补气）
+    const gap = 130 + rand() * 250
     const seg = 500 + rand() * 700
     ground.push([x + gap, seg, 480])
     if (rand() > 0.4) {
@@ -44,9 +49,13 @@ export function makeLevel(seed: number): Level {
       coinArc(x + gap + seg * 0.4 + 75, py - 40, 3)
     }
     if (rand() > 0.6) coinArc(x + gap + seg * 0.7, 420, 4)
+    if (x > halfWidth && rand() > 0.5) {
+      // 杆挂 y≈300-340：贴地小跳从下方钻过，高跳/滞空喷气要留神
+      hazards.push([x + gap + seg * (0.3 + rand() * 0.4), 300 + rand() * 40, 70 + rand() * 60, 16])
+    }
     x += gap + seg
   }
   ground.push([x + 200, 800, 480])
   coinArc(x + 500, 420, 5)
-  return { ground, platforms, coins, worldWidth: x + 1000 }
+  return { ground, platforms, coins, hazards, worldWidth: x + 1000 }
 }
