@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 // 这个端口暴露出去，智控台里把智能体配置为第三方应用接入模式。
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP 监听地址")
+	mac := flag.String("linx-mac", "98:a3:16:f9:d9:35", "灵矽设备 MAC（智控台预注册绑定的那台）")
 	flag.Parse()
 
 	brain := NewBrain(BrainConfig{
@@ -20,8 +22,14 @@ func main() {
 	})
 	hub := NewGameHub(brain)
 
+	lc := NewLinxClient(*mac)
+	hub.SetLinxClient(lc)
+	go lc.Run(context.Background())
+
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ws", hub.HandleBrowserWS)
 	mux.HandleFunc("POST /api/chat/stream", hub.HandleLinxChat)
+	mux.HandleFunc("POST /intent", hub.HandleIntent)
 	mux.HandleFunc("GET /game/ws", hub.HandleGameWS)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
