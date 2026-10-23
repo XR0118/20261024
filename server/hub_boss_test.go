@@ -77,12 +77,12 @@ func waitPhase(t *testing.T, h *GameHub, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if h.EffPhase() == want {
+		if h.currentPhase() == want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("phase 未变为 %s，got %s", want, h.EffPhase())
+	t.Fatalf("phase 未变为 %s，got %s", want, h.currentPhase())
 }
 
 func enterBattle(t *testing.T, h *GameHub, conn *websocket.Conn, secret string) {
@@ -103,7 +103,7 @@ func TestBossBattleLifecycleOverWS(t *testing.T) {
 	conn := dialHub(t, h)
 
 	enterBattle(t, h, conn, "四八三")
-	if p := h.EffPhase(); p != "boss" {
+	if p := h.currentPhase(); p != "boss" {
 		t.Fatalf("Boss 战阶段应为 boss，got %s", p)
 	}
 
@@ -139,7 +139,7 @@ func TestBossBattleLifecycleOverWS(t *testing.T) {
 	if last.Kind != "battle-ended" || last.Outcome != boss.OutcomeLose || last.Coins != 30 || last.FinalCoins != 30 {
 		t.Fatalf("格挡失败应判负、按原额结算，got %+v", evs)
 	}
-	if p := h.EffPhase(); p != "idle" {
+	if p := h.currentPhase(); p != "idle" {
 		t.Fatalf("战后应回 idle，got %s", p)
 	}
 }
@@ -154,7 +154,7 @@ func TestSurrenderOverSTT(t *testing.T) {
 	if len(evs) != 1 || evs[0].Kind != "battle-ended" || evs[0].Outcome != boss.OutcomeSurrender || evs[0].FinalCoins != 30 {
 		t.Fatalf("投降应立即判负原额结算，got %+v", evs)
 	}
-	if p := h.EffPhase(); p != "idle" {
+	if p := h.currentPhase(); p != "idle" {
 		t.Fatalf("投降后应回 idle，got %s", p)
 	}
 }
@@ -173,6 +173,9 @@ func TestPhaseThreeStatesAndCompat(t *testing.T) {
 	if len(vl.calls) != 2 || vl.calls[0] != true || vl.calls[1] != false {
 		t.Fatalf("语音链路应只在 running↔非running 切换（boss 保持连接），got %v", vl.calls)
 	}
+	// 未知相位串按旧口径推导，不当合法 phase 存
+	sendWS(t, conn, map[string]any{"type": "game-state", "state": map[string]any{"phase": "paused", "playing": true}})
+	waitPhase(t, h, "running")
 }
 
 // 调试通道与语音通道等价：Boss 战中 /intent 的文本同样进引擎。
@@ -190,5 +193,64 @@ func TestIntentEndpointBossAware(t *testing.T) {
 	evs := readBossEvents(t, conn)
 	if len(evs) != 1 || evs[0].Kind != "battle-ended" || evs[0].Outcome != boss.OutcomeSurrender {
 		t.Fatalf("/intent 在 Boss 战应走引擎，got %+v", evs)
+	}
+}
+
+// 战斗进行中收到旧式 game-state（无 phase、playing=true）不得把相位
+// 打回 running 切断 Boss 语音——相位在战期内由服务端持有。
+func TestLegacyGameStateDuringBossKeepsVoice(t *testing.T) {
+	h, vl := newBossHub(t)
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "四八三")
+
+	sendWS(t, conn, map[string]any{"type": "game-state", "state": map[string]any{"playing": true, "dist": 300}})
+	// 等 game-state 落库（Playing=true 且相位被服务端钉在 boss）再继续，
+	// 否则测试侧直接调 handleSTT 会与服务器 goroutine 的处理竞态
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.mu.RLock()
+		landed := h.state.Playing && h.state.Phase == phaseBoss
+		h.mu.RUnlock()
+		if landed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("旧式 game-state 未被处理或未被钉在 boss 相位")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(vl.calls) != 0 {
+		t.Fatalf("战斗中旧式上报不应拨动语音链路，got %v", vl.calls)
+	}
+
+	h.handleSTT("我投降了")
+	evs := readBossEvents(t, conn)
+	if evs[len(evs)-1].Kind != "battle-ended" {
+		t.Fatalf("战斗应正常进行到投降，got %+v", evs)
+	}
+	waitPhase(t, h, "idle")
+}
+
+// 页面重载（新连接顶掉旧连接）即弃局：新页面可开新战斗，旧状态不残留。
+func TestReconnectAbandonsBattle(t *testing.T) {
+	h, _ := newBossHub(t)
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "四八三")
+
+	// 后台排空旧连接：hub 的 replace 要走 close 握手，测试端不读会卡到超时
+	go func() {
+		for {
+			if _, _, err := conn.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	conn2 := dialHub(t, h) // 顶掉 conn
+	waitPhase(t, h, "idle")
+
+	// 旧战斗已弃：新页面进场应是全新战斗（若未弃局会收到 error 事件）
+	sendWS(t, conn2, map[string]any{"type": "boss-enter", "coins": 50})
+	if evs := readBossEvents(t, conn2); len(evs) != 1 || evs[0].Kind != "awaiting-secret" {
+		t.Fatalf("重连后应能开新战斗，got %+v", evs)
 	}
 }

@@ -15,10 +15,17 @@ import (
 	"loudleap/server/boss"
 )
 
+// 游戏相位（ADR-0003 三阶段）。语音链路只在跨越 running 边界时切换。
+const (
+	phaseIdle    = "idle"
+	phaseRunning = "running"
+	phaseBoss    = "boss"
+)
+
 // 游戏网页上报的最新状态，供台词生成时取用（如结算点评报距离和摔死次数）。
 type GameState struct {
 	Playing bool   `json:"playing"`
-	Phase   string `json:"phase,omitempty"` // idle/running/boss；空=按 playing 推导（旧前端兼容）
+	Phase   string `json:"phase,omitempty"` // idle/running/boss；空或非法值=按 playing 推导（旧前端兼容）
 	Dist    int    `json:"dist"`
 	Deaths  int    `json:"deaths"`
 	Won     bool   `json:"won"`
@@ -30,6 +37,16 @@ type GameState struct {
 type voiceLink interface {
 	SetPlaying(bool)
 	SendAudio(context.Context, []byte) error
+}
+
+// browserMsg 浏览器主通道文本消息的全集。
+type browserMsg struct {
+	Type    string    `json:"type"`
+	State   GameState `json:"state"`
+	Coins   int       `json:"coins"`
+	Action  string    `json:"action"`
+	Digits  string    `json:"digits"`
+	Blocked *bool     `json:"blocked"`
 }
 
 type GameHub struct {
@@ -117,19 +134,20 @@ func (h *GameHub) pushBrowserJSON(payload map[string]any) {
 	}
 }
 
-// effectivePhase 三阶段的判定口径：显式 phase 优先，否则按旧 playing 推导。
+// effectivePhase 三阶段判定口径：显式且合法的 phase 优先，否则按旧 playing 推导。
 func effectivePhase(st GameState) string {
-	switch {
-	case st.Phase != "":
+	switch st.Phase {
+	case phaseIdle, phaseRunning, phaseBoss:
 		return st.Phase
-	case st.Playing:
-		return "running"
-	default:
-		return "idle"
 	}
+	if st.Playing {
+		return phaseRunning
+	}
+	return phaseIdle
 }
 
-func (h *GameHub) EffPhase() string {
+// currentPhase 报告当前有效相位。
+func (h *GameHub) currentPhase() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return effectivePhase(h.state)
@@ -147,8 +165,8 @@ func (h *GameHub) setPhase(p string) {
 
 // syncVoice 语音会话的真实生命周期只有连/断两态：跑酷断，待命与 Boss 战连。
 func (h *GameHub) syncVoice(prev, cur string) {
-	if (prev == "running") != (cur == "running") {
-		h.setVoiceRunning(cur == "running")
+	if (prev == phaseRunning) != (cur == phaseRunning) {
+		h.setVoiceRunning(cur == phaseRunning)
 	}
 }
 
@@ -161,13 +179,34 @@ func (h *GameHub) setVoiceRunning(running bool) {
 	}
 }
 
-// ---------------- Boss 战接线（#15） ----------------
+// applyGameState 合并浏览器状态上报。战斗进行中相位由服务端持有：
+// 旧式 playing 上报（无 phase）不得把 Boss 战打回 running 切断语音。
+func (h *GameHub) applyGameState(st GameState) {
+	active := h.bossActive()
+	h.mu.Lock()
+	prev := effectivePhase(h.state)
+	if active && effectivePhase(st) != phaseBoss {
+		st.Phase = phaseBoss
+	}
+	h.state = st
+	cur := effectivePhase(h.state)
+	h.mu.Unlock()
+	h.syncVoice(prev, cur)
+}
 
 // bossActive 报数/投降等 STT 是否应进引擎。
 func (h *GameHub) bossActive() bool {
 	h.bossMu.Lock()
 	defer h.bossMu.Unlock()
-	return h.battle != nil && h.battle.Phase() != boss.PhaseEnded
+	return h.liveBattle() != nil
+}
+
+// liveBattle 进行中的战斗；nil=无战局或已终局。调用方须持有 bossMu。
+func (h *GameHub) liveBattle() *boss.Battle {
+	if h.battle != nil && h.battle.Phase() != boss.PhaseEnded {
+		return h.battle
+	}
+	return nil
 }
 
 // enterBoss 浏览器跑完全程进场开战：本局金币原额交给引擎托管，
@@ -175,22 +214,57 @@ func (h *GameHub) bossActive() bool {
 func (h *GameHub) enterBoss(coins int) {
 	h.bossMu.Lock()
 	defer h.bossMu.Unlock()
-	if h.battle != nil && h.battle.Phase() != boss.PhaseEnded {
-		h.pushBossEvents([]boss.Event{{Kind: "error", Message: "这局的挑战者还在，先打完"}})
+	if h.liveBattle() != nil {
+		h.pushBossEvents([]boss.Event{{Kind: "error", Message: "本局 Boss 战已在进行"}})
 		return
 	}
 	h.battle = boss.NewBattle(h.newRng(), coins)
-	h.setPhase("boss")
-	h.pushBossEvents([]boss.Event{{Kind: "awaiting-secret", Message: "报出你的三位密数，应战。"}})
+	h.setPhase(phaseBoss)
+	h.pushBossEvents([]boss.Event{{Kind: "awaiting-secret", Message: "请报出你的三位密数"}})
 }
 
-// applyBossSTT 语音输入进引擎：先 RouteInput（数字→报数，否则关键词意图）。
+// applyBossSTT 语音输入进引擎（与 /intent 调试通道共用）。
 func (h *GameHub) applyBossSTT(text string) {
 	h.bossMu.Lock()
 	defer h.bossMu.Unlock()
-	if h.battle == nil || h.battle.Phase() == boss.PhaseEnded {
+	if h.liveBattle() == nil {
 		return
 	}
+	h.applyParsed(text)
+}
+
+// bossAction 浏览器显式动作（调试按键/QTE 格挡结果），与语音通道等价。
+func (h *GameHub) bossAction(m browserMsg) {
+	h.bossMu.Lock()
+	defer h.bossMu.Unlock()
+	if h.liveBattle() == nil {
+		return
+	}
+	switch m.Action {
+	case "block":
+		if m.Blocked == nil {
+			return
+		}
+		evs, err := h.battle.ReportBlock(*m.Blocked)
+		h.settleBoss(evs, err)
+	case "secret", "guess":
+		h.applyParsed(m.Digits)
+	case "swap":
+		if m.Digits == "" {
+			// 与语音通道对称：只说「换数」先给提示，新密数随后报
+			h.applyInput(boss.Input{Intent: boss.IntentSwap})
+			return
+		}
+		h.applyParsed(m.Digits)
+	case "decline-swap":
+		h.applyInput(boss.Input{Intent: boss.IntentDeclineSwap})
+	case "surrender":
+		h.applyInput(boss.Input{Intent: boss.IntentSurrender})
+	}
+}
+
+// applyParsed 解析一段报数文本并分发（调用方须持有 bossMu）。
+func (h *GameHub) applyParsed(text string) {
 	in, err := boss.RouteInput(text)
 	if err != nil {
 		h.pushBossEvents([]boss.Event{{Kind: "error", Message: err.Error()}})
@@ -199,38 +273,10 @@ func (h *GameHub) applyBossSTT(text string) {
 	h.applyInput(in)
 }
 
-// bossAction 浏览器显式动作（调试按键/QTE 格挡结果），与语音通道等价。
-func (h *GameHub) bossAction(action, digits string, blocked *bool) {
-	h.bossMu.Lock()
-	defer h.bossMu.Unlock()
-	if h.battle == nil || h.battle.Phase() == boss.PhaseEnded {
-		return
-	}
-	switch action {
-	case "block":
-		if blocked == nil {
-			return
-		}
-		evs, err := h.battle.ReportBlock(*blocked)
-		h.settleBoss(evs, err)
-	case "secret", "guess", "swap":
-		in, perr := boss.RouteInput(digits)
-		if perr != nil {
-			h.pushBossEvents([]boss.Event{{Kind: "error", Message: perr.Error()}})
-			return
-		}
-		h.applyInput(in)
-	case "decline-swap":
-		h.applyInput(boss.Input{Intent: boss.IntentDeclineSwap})
-	case "surrender":
-		h.applyInput(boss.Input{Intent: boss.IntentSurrender})
-	}
-}
-
 // applyInput 按引擎当前阶段分发一次已解析的输入。调用方须持有 bossMu。
 func (h *GameHub) applyInput(in boss.Input) {
-	b := h.battle
-	if b == nil || b.Phase() == boss.PhaseEnded {
+	b := h.liveBattle()
+	if b == nil {
 		return
 	}
 	// 投降任何未终局阶段都受理（含攻击等待期）
@@ -257,10 +303,10 @@ func (h *GameHub) applyInput(in boss.Input) {
 		case in.Intent == boss.IntentDeclineSwap:
 			evs, err = b.DeclineSwap()
 		case in.Intent == boss.IntentSwap:
-			evs = []boss.Event{{Kind: "swap-prompt", Message: "好，报出你的新密数。"}}
+			evs = []boss.Event{{Kind: "swap-prompt", Message: "请报出你的新密数"}}
 		}
 	case boss.PhaseAttack:
-		// QTE 进行中：报数与意图都不受理，格挡结果走 boss-action/语音外通道
+		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
 	}
 	h.settleBoss(evs, err)
 }
@@ -273,9 +319,17 @@ func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 		return
 	}
 	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
-		h.setPhase("idle")
+		h.setPhase(phaseIdle)
 	}
 	h.pushBossEvents(evs)
+}
+
+// abandonBoss 页面重载即弃局：刷新后的新页面不应接手旧战斗状态。
+func (h *GameHub) abandonBoss() {
+	h.bossMu.Lock()
+	h.battle = nil
+	h.bossMu.Unlock()
+	h.setPhase(phaseIdle)
 }
 
 func (h *GameHub) pushBossEvents(evs []boss.Event) {
@@ -294,11 +348,15 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	h.mu.Lock()
-	if h.bconn != nil {
+	replaced := h.bconn != nil
+	if replaced {
 		h.bconn.Close(websocket.StatusPolicyViolation, "replaced")
 	}
 	h.bconn = conn
 	h.mu.Unlock()
+	if replaced {
+		h.abandonBoss()
+	}
 	defer func() {
 		h.mu.Lock()
 		if h.bconn == conn {
@@ -321,30 +379,17 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		case websocket.MessageText:
-			var msg struct {
-				Type    string    `json:"type"`
-				State   GameState `json:"state"`
-				Coins   int       `json:"coins"`
-				Action  string    `json:"action"`
-				Digits  string    `json:"digits"`
-				Blocked *bool     `json:"blocked"`
-			}
+			var msg browserMsg
 			if err := json.Unmarshal(data, &msg); err != nil {
 				continue
 			}
 			switch msg.Type {
 			case "game-state":
-				h.mu.Lock()
-				prev := effectivePhase(h.state)
-				h.state = msg.State
-				cur := effectivePhase(h.state)
-				h.mu.Unlock()
-				// 阶段切换联动语音会话生命周期（ADR-0002/0003：仅跑酷断连）
-				h.syncVoice(prev, cur)
+				h.applyGameState(msg.State)
 			case "boss-enter":
 				h.enterBoss(msg.Coins)
 			case "boss-action":
-				h.bossAction(msg.Action, msg.Digits, msg.Blocked)
+				h.bossAction(msg)
 			}
 		}
 	}
@@ -436,9 +481,7 @@ func (h *GameHub) HandleGameWS(w http.ResponseWriter, r *http.Request) {
 			log.Printf("game ws closed: %v", err)
 			return
 		}
-		h.mu.Lock()
-		h.state = st
-		h.mu.Unlock()
+		h.applyGameState(st)
 	}
 }
 
