@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { reportGameState, ttsDone } from '../audio/voice'
+import { reportGameState, resetTTSTracking, ttsArrived, ttsArrivedAndDone } from '../audio/voice'
 import { getPlayer, setPlayerName } from '../player'
 
 const W = 960
@@ -92,12 +92,15 @@ export class BootScene extends Phaser.Scene {
   }
 
   update(time: number) {
-    // 开局挂起中：等主持人播报真正结束（平台 tts 停 + 本地队列排空），
-    // 4s 兜底防平台不回播报时卡死
+    // 开局挂起：必须"播报来过且已放完"才开局——只看"没在播"会在台词
+    // 还没生成时误判，开局断连就会掐掉即将到来的倒计时。
+    // 播报始终不来（4s）或播得异常长（12s）时兜底放行。
     if (this.pendingSeed !== null) {
-      if (ttsDone() || time - this.prepareAt > 4000) {
+      const elapsed = time - this.prepareAt
+      if (ttsArrivedAndDone() || elapsed > 12000 || (elapsed > 4000 && !ttsArrived())) {
         const seed = this.pendingSeed
         this.pendingSeed = null
+        resetTTSTracking()
         this.startGame(seed ?? undefined)
       }
     }

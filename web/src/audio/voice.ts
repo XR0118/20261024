@@ -24,6 +24,7 @@ export async function startVoice(): Promise<void> {
 }
 
 let ttsRemotePlaying = false // 平台侧 TTS 进行中（tts-state 事件）
+let sawTTS = false // 本次对话平台确实下发过播报（区分"没开始"与"已结束"）
 
 function onMessage(ev: MessageEvent) {
   if (typeof ev.data === 'string') {
@@ -43,9 +44,11 @@ function onMessage(ev: MessageEvent) {
     }
     if (msg.type === 'tts-state') {
       ttsRemotePlaying = !!msg.playing
+      if (ttsRemotePlaying) sawTTS = true
     }
     return
   }
+  sawTTS = true
   void decodeAndPlay(ev.data as ArrayBuffer)
 }
 
@@ -55,6 +58,22 @@ export function ttsDone(): boolean {
   if (ttsRemotePlaying) return false
   if (playCtx && lastEnd > playCtx.currentTime + 0.05) return false
   return true
+}
+
+// 播报"来过且已放完"。仅 ttsDone() 不够：台词还没生成时它也为 true，
+// 若此时开局会掐掉即将到来的播报。
+export function ttsArrivedAndDone(): boolean {
+  return sawTTS && ttsDone()
+}
+
+// 播报是否已开始下发（用于"迟迟不来"的兜底判断）
+export function ttsArrived(): boolean {
+  return sawTTS
+}
+
+// 每轮对话重置"来过"标记（开局等待的判定窗口）
+export function resetTTSTracking() {
+  sawTTS = false
 }
 
 // ---------------- 上行：PCM → OPUS ----------------
