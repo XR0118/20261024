@@ -127,8 +127,13 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 			}
 			if msg.Type == "game-state" {
 				h.mu.Lock()
+				prevPlaying := h.state.Playing
 				h.state = msg.State
 				h.mu.Unlock()
+				// 阶段切换联动语音会话生命周期（ADR-0002：playing 停上行/断会话，idle 重连）
+				if prevPlaying != msg.State.Playing && h.linx != nil {
+					h.linx.SetPlaying(msg.State.Playing)
+				}
 			}
 		}
 	}

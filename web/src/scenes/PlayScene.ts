@@ -135,9 +135,13 @@ export class PlayScene extends Phaser.Scene {
       reportGameState({ playing: true, dist, deaths: this.deaths, won: false })
     }
 
+    // 掉坑即局终：结算入账（距离+金币），回首页重连语音待命，由语音/空格再开
     if (this.player.y > H + 160) {
-      this.deaths++
-      this.scene.restart({ deaths: this.deaths, seed: this.seed })
+      this.finished = true
+      this.reportRun(dist)
+      this.hudText.setText(`摔进坑里！本局 ${dist} m · 💰 ${this.coins}`)
+      this.time.delayedCall(2000, () => this.scene.start('boot'))
+      return
     }
     if (this.player.x > this.level.worldWidth - 80) {
       this.finished = true
