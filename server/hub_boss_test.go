@@ -15,13 +15,21 @@ import (
 	"loudleap/server/boss"
 )
 
-// voiceLink 的假实现：只记录 SetPlaying 调用，验证三阶段联动。
+// voiceLink 的假实现：记录 SetPlaying 调用（三阶段联动）与台词（台词层）。
 type fakeVoiceLink struct {
-	calls []bool
+	calls  []bool
+	spoken []string // "exact:台词" | "llm:事件标记"
 }
 
 func (f *fakeVoiceLink) SetPlaying(p bool)                       { f.calls = append(f.calls, p) }
 func (f *fakeVoiceLink) SendAudio(context.Context, []byte) error { return nil }
+func (f *fakeVoiceLink) Speak(text string, exact bool) {
+	tag := "llm"
+	if exact {
+		tag = "exact"
+	}
+	f.spoken = append(f.spoken, tag+":"+text)
+}
 
 func newBossHub(t *testing.T) (*GameHub, *fakeVoiceLink) {
 	t.Helper()
@@ -29,6 +37,7 @@ func newBossHub(t *testing.T) (*GameHub, *fakeVoiceLink) {
 	vl := &fakeVoiceLink{}
 	h.linx = vl
 	h.newRng = func() *rand.Rand { return rand.New(rand.NewSource(7)) }
+	h.blockTimeout = 60 * time.Millisecond
 	return h, vl
 }
 
@@ -92,8 +101,12 @@ func enterBattle(t *testing.T, h *GameHub, conn *websocket.Conn, secret string) 
 		t.Fatalf("进场应先索要密数，got %+v", evs)
 	}
 	h.handleSTT("我的密数是" + secret)
-	if evs := readBossEvents(t, conn); len(evs) != 1 || evs[0].Kind != "battle-started" {
-		t.Fatalf("上报密数应开战，got %+v", evs)
+	evs := readBossEvents(t, conn)
+	if len(evs) != 2 || evs[0].Kind != "battle-started" || evs[1].Kind != "secret-confirmed" {
+		t.Fatalf("上报密数应开战并回显确认，got %+v", evs)
+	}
+	if evs[1].Guess == "" {
+		t.Fatalf("secret-confirmed 应携带密数回显，got %+v", evs[1])
 	}
 }
 
@@ -252,5 +265,120 @@ func TestReconnectAbandonsBattle(t *testing.T) {
 	sendWS(t, conn2, map[string]any{"type": "boss-enter", "coins": 50})
 	if evs := readBossEvents(t, conn2); len(evs) != 1 || evs[0].Kind != "awaiting-secret" {
 		t.Fatalf("重连后应能开新战斗，got %+v", evs)
+	}
+}
+
+// 攻击窗口超时兜底：不上报格挡结果（页面僵死/断连）按失败判负。
+func TestBlockTimeoutLosesBattle(t *testing.T) {
+	h, _ := newBossHub(t) // blockTimeout=60ms
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	sawAttack := false
+	for round := 0; round < 20 && !sawAttack; round++ {
+		h.handleSTT("报数 九八七")
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack = true
+			}
+		}
+	}
+	if !sawAttack {
+		t.Fatal("未进入攻击")
+	}
+	// 不发 block——等超时自动判负
+	evs := readBossEvents(t, conn)
+	last := evs[len(evs)-1]
+	if last.Kind != "battle-ended" || last.Outcome != boss.OutcomeLose {
+		t.Fatalf("超时未按失败判负，got %+v", evs)
+	}
+	if p := h.currentPhase(); p != "idle" {
+		t.Fatalf("超时判负后应回 idle，got %s", p)
+	}
+}
+
+// 同一场对局的第二攻必须由自己的计时兜底：首攻的残留计时器若未作废，
+// 会把新格挡窗口提前判负（快速格挡→放弃换数→Boss 再全中的交错）。
+func TestSecondAttackNotKilledByFirstTimer(t *testing.T) {
+	h, _ := newBossHub(t)
+	h.blockTimeout = 1 * time.Second
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	// 推进到首攻
+	sawAttack := false
+	for round := 0; round < 20 && !sawAttack; round++ {
+		h.handleSTT("报数 九八七")
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack = true
+			}
+		}
+	}
+	if !sawAttack {
+		t.Fatal("未进入首攻")
+	}
+	blocked := true
+	h.bossAction(browserMsg{Action: "block", Blocked: &blocked})
+	readBossEvents(t, conn) // reveal
+	h.handleSTT("算了")       // 放弃换数
+	readBossEvents(t, conn)
+
+	time.Sleep(400 * time.Millisecond) // 让第二攻落在首攻计时窗内（且远早于其到期）
+	h.handleSTT("报数 九八七")              // Boss 候选集只剩旧密数 → 立即再全中
+	t2 := time.Now()
+	sawAttack2 := false
+	for _, e := range readBossEvents(t, conn) {
+		if e.Kind == "attack" {
+			sawAttack2 = true
+		}
+	}
+	if !sawAttack2 {
+		t.Fatal("放弃换数后 Boss 应立即再全中")
+	}
+	// 不上报，等兜底判负：必须不早于第二攻自己的超时（首攻残留会在 t2+600ms 抢跑）
+	evs := readBossEvents(t, conn)
+	if last := evs[len(evs)-1]; last.Kind != "battle-ended" || last.Outcome != boss.OutcomeLose {
+		t.Fatalf("兜底判负未发生，got %+v", evs)
+	}
+	if el := time.Since(t2); el < 900*time.Millisecond {
+		t.Fatalf("判负提前 %.0fms——疑似首攻残留计时器抢跑", el.Seconds()*1000)
+	}
+}
+
+// Boss 事件转化为语音台词：关键信息逐字直发（exact），氛围走 LLM 事件标记。
+func TestBossEventsAreSpoken(t *testing.T) {
+	h, vl := newBossHub(t)
+	conn := dialHub(t, h)
+
+	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30})
+	readBossEvents(t, conn) // awaiting-secret
+	h.handleSTT("我的密数是四八三")
+	readBossEvents(t, conn) // battle-started
+	h.handleSTT("报数 九八七")
+	readBossEvents(t, conn) // player + boss guess-result
+	h.handleSTT("我投降了")
+	readBossEvents(t, conn) // battle-ended
+
+	spoken := strings.Join(vl.spoken, "\n")
+	for _, want := range []string{
+		"exact:请报出你的三位密数",
+		"llm:【BOSS 来了】",
+		"exact:听好了，我报：零一二", // Boss 首报恒为 012
+		"exact:认输了？明智",
+	} {
+		if !strings.Contains(spoken, want) {
+			t.Errorf("台词缺失 %q\nspoken:\n%s", want, spoken)
+		}
+	}
+	// 玩家九八七对 seed-7 密数零命中——零命中台词有三句随机变体
+	zeroHit := false
+	for _, v := range []string{"零位", "一个都没中"} {
+		if strings.Contains(spoken, "exact:"+v) {
+			zeroHit = true
+		}
+	}
+	if !zeroHit {
+		t.Errorf("零命中台词缺失\nspoken:\n%s", spoken)
 	}
 }

@@ -1,8 +1,8 @@
 import Phaser from 'phaser'
 import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
-import { reportGameState, voiceListening } from '../audio/voice'
+import { reportGameState, sendBossEnter, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
-import { getPlayer } from '../player'
+import { reportRun } from '../player'
 
 const W = 960
 const H = 540
@@ -201,8 +201,17 @@ export class PlayScene extends Phaser.Scene {
       return
     }
     if (this.player.x > this.level.worldWidth - 80) {
-      this.endRun(`通关！摔死 ${this.deaths} 次 · 💰 ${this.coins}`, true)
+      this.enterBoss(dist)
     }
+  }
+
+  // 冲线=进入 Boss 战（「通关」概念消灭）：结算挪到战斗结束按结果一次性上报
+  private enterBoss(dist: number) {
+    if (this.finished) return
+    this.finished = true
+    reportGameState({ playing: false, phase: 'boss', dist, deaths: this.deaths, won: false })
+    sendBossEnter(this.coins)
+    this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
   }
 
   // 局终统一出口：结算上报（金币入账）、展示结果、回首页
@@ -217,11 +226,6 @@ export class PlayScene extends Phaser.Scene {
 
   // 结算上报：金币累计与最远距离由后端持久化（关闭页面不丢）
   private reportRun(dist: number) {
-    const me = getPlayer()
-    void fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: me.id, name: me.name, dist, coins: this.coins }),
-    })
+    void reportRun(dist, this.coins)
   }
 }

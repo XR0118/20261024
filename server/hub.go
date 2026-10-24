@@ -33,10 +33,11 @@ type GameState struct {
 }
 
 // voiceLink 是 hub 对语音链路的全部依赖（LinxClient 实现）。
-// 抽接口是为了 hub 测试能注入假链路验证三阶段联动。
+// 抽接口是为了 hub 测试能注入假链路验证三阶段联动与台词层。
 type voiceLink interface {
 	SetPlaying(bool)
 	SendAudio(context.Context, []byte) error
+	Speak(text string, exact bool)
 }
 
 // browserMsg 浏览器主通道文本消息的全集。
@@ -57,15 +58,18 @@ type GameHub struct {
 	linx  voiceLink
 	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
 
-	bossMu sync.Mutex
-	battle *boss.Battle
-	newRng func() *rand.Rand // Boss 战随机源；测试注入固定 seed
+	bossMu       sync.Mutex
+	battle       *boss.Battle
+	newRng       func() *rand.Rand // Boss 战随机源；测试注入固定 seed
+	blockTimeout time.Duration     // 攻击等格挡结果的兜底超时；测试注入短值
+	blockGen     uint64            // 攻击代数：新一轮攻击使旧超时计时作废
 }
 
 func NewGameHub(brain *Brain) *GameHub {
 	return &GameHub{
-		brain:  brain,
-		newRng: func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
+		brain:        brain,
+		newRng:       func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
+		blockTimeout: 3 * time.Second,
 	}
 }
 
@@ -291,6 +295,10 @@ func (h *GameHub) applyInput(in boss.Input) {
 	case boss.PhaseAwaitingSecret:
 		if in.Guess != (boss.Secret{}) {
 			evs, err = b.ReportSecret(in.Guess)
+			if err == nil {
+				// 界面确认：语音上报的密数须回显给玩家核对（键盘路径同源）
+				evs = append(evs, boss.Event{Kind: "secret-confirmed", Guess: in.Guess.String(), Message: "密数已确认"})
+			}
 		}
 	case boss.PhasePlayerTurn:
 		if in.Guess != (boss.Secret{}) {
@@ -309,6 +317,28 @@ func (h *GameHub) applyInput(in boss.Input) {
 		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
 	}
 	h.settleBoss(evs, err)
+	for _, e := range evs {
+		if e.Kind == boss.KindAttack {
+			h.armBlockTimeout()
+		}
+	}
+}
+
+// armBlockTimeout 攻击兜底：窗口内无格挡结果上报（页面僵死/断连）按失败判负。
+// 代数计数防同一场对局的二次攻击被首攻残留计时器误判（快速格挡→放弃
+// 换数→Boss 再全中可能落在首攻超时窗内）；调用方须持有 bossMu。
+func (h *GameHub) armBlockTimeout() {
+	h.blockGen++
+	b, gen := h.battle, h.blockGen
+	time.AfterFunc(h.blockTimeout, func() {
+		h.bossMu.Lock()
+		defer h.bossMu.Unlock()
+		if gen != h.blockGen || h.battle != b || b.Phase() != boss.PhaseAttack {
+			return // 新一轮攻击/上报/弃局/新对局，本计时作废
+		}
+		evs, err := b.ReportBlock(false)
+		h.settleBoss(evs, err)
+	})
 }
 
 // settleBoss 收局并推送：battle-ended 时先回 idle 再推（读端收到
@@ -337,6 +367,20 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 		return
 	}
 	h.pushBrowserJSON(map[string]any{"type": "boss-events", "events": evs})
+	for _, e := range evs {
+		if line, exact, ok := challengerLine(e); ok {
+			h.speak(line, exact)
+		}
+	}
+}
+
+func (h *GameHub) speak(line string, exact bool) {
+	h.mu.RLock()
+	linx := h.linx
+	h.mu.RUnlock()
+	if linx != nil {
+		linx.Speak(line, exact)
+	}
 }
 
 // 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报 + Boss 战动作。
@@ -348,15 +392,14 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	h.mu.Lock()
-	replaced := h.bconn != nil
-	if replaced {
+	if h.bconn != nil {
 		h.bconn.Close(websocket.StatusPolicyViolation, "replaced")
 	}
 	h.bconn = conn
 	h.mu.Unlock()
-	if replaced {
-		h.abandonBoss()
-	}
+	// 页面连接（无论顶掉旧连接还是旧连接已自行断开）一律开启新对局状态：
+	// 刷新后残留的战斗会霸占 boss 相位与语音输入路由
+	h.abandonBoss()
 	defer func() {
 		h.mu.Lock()
 		if h.bconn == conn {
