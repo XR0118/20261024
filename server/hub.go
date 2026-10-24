@@ -50,8 +50,8 @@ type browserMsg struct {
 	Digits  string    `json:"digits"`
 	Blocked *bool     `json:"blocked"`
 	Dist    int       `json:"dist"`
-	Deaths  int       `json:"deaths"`
 	Name    string    `json:"name,omitempty"`
+	Cause   string    `json:"cause,omitempty"` // 途中局终死因：pit=掉坑，bar=撞杆
 }
 
 type GameHub struct {
@@ -376,8 +376,8 @@ func (h *GameHub) writeRunMemory(evs []boss.Event) {
 		return
 	}
 	st := h.State()
-	fact := fmt.Sprintf("%s：距离 %d 米，摔死 %d 次，金币 %d，Boss 战：%s",
-		h.playerNameOf(), st.Dist, st.Deaths, ended.FinalCoins, outcomeText(ended.Outcome))
+	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：Boss 战%s",
+		h.playerNameOf(), st.Dist, ended.FinalCoins, outcomeText(ended.Outcome))
 	h.speak("【本局结束】"+fact, false)
 	h.writeMemory("【对局】" + fact)
 }
@@ -403,10 +403,21 @@ func (h *GameHub) handleRunEnded(m browserMsg) {
 	if m.Name != "" {
 		h.rememberPlayerName(m.Name)
 	}
-	fact := fmt.Sprintf("%s：距离 %d 米，摔死 %d 次，金币 %d，未到 Boss 战（途中局终）",
-		h.playerNameOf(), m.Dist, m.Deaths, m.Coins)
+	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：%s",
+		h.playerNameOf(), m.Dist, m.Coins, causeText(m.Cause))
 	h.speak("【本局结束】"+fact, false)
 	h.writeMemory("【对局】" + fact)
+}
+
+// causeText 途中局终的准确死因——笼统的「摔死」会把撞杆也算进去，复盘失真。
+func causeText(c string) string {
+	switch c {
+	case "pit":
+		return "掉进坑里"
+	case "bar":
+		return "撞上横杆"
+	}
+	return "途中局终"
 }
 
 func (h *GameHub) rememberPlayerName(name string) {

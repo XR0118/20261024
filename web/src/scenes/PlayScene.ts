@@ -101,7 +101,7 @@ export class PlayScene extends Phaser.Scene {
       bar.setStrokeStyle(2, 0xb3001b)
       group.add(bar)
     }
-    this.physics.add.overlap(this.player, group, () => this.endRun('撞上横杆！'))
+    this.physics.add.overlap(this.player, group, () => this.endRun('撞上横杆！', 'bar'))
   }
 
   private solid(x: number, w: number, topY: number, h: number, color: number) {
@@ -188,7 +188,7 @@ export class PlayScene extends Phaser.Scene {
 
     const dist = Math.max(0, Math.floor((this.player.x - 80) / 50))
     const micTag = mic.state === 'running' ? (voiceListening() ? ' 🎙' : ' ⏳') : ' [无麦克风]'
-    this.hudText.setText(`${dist} m · 摔死 ${this.deaths} 次${micTag}`)
+    this.hudText.setText(`${dist} m${micTag}`)
 
     if (time - this.lastReport > 500) {
       this.lastReport = time
@@ -197,7 +197,7 @@ export class PlayScene extends Phaser.Scene {
 
     // 掉坑即局终：结算入账（距离+金币），回首页重连语音待命，由语音/空格再开
     if (this.player.y > H + 160) {
-      this.endRun(`摔进坑里！本局 ${dist} m · 💰 ${this.coins}`)
+      this.endRun(`摔进坑里！本局 ${dist} m · 💰 ${this.coins}`, 'pit')
       return
     }
     if (this.player.x > this.level.worldWidth - 80) {
@@ -214,16 +214,14 @@ export class PlayScene extends Phaser.Scene {
     this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
   }
 
-  // 局终统一出口：结算上报（金币入账）、记忆片段通知、展示结果、回首页。
-  // 掉坑/撞杆本身就是一次摔死——必须先记入，否则记忆摘要写「摔死 0 次」
-  // 与教练复盘口径全错（实机测试踩过）。
-  private endRun(message: string, won = false) {
+  // 局终统一出口（掉坑/撞杆，未到 Boss 战）：结算上报、按准确死因写记忆、回首页
+  private endRun(message: string, cause: 'pit' | 'bar') {
     if (this.finished) return
     this.finished = true
     this.deaths++
     const dist = Math.floor((this.player.x - 80) / 50)
-    reportGameState({ playing: false, dist, deaths: this.deaths, won })
-    sendRunEnded(dist, this.deaths, this.coins, getPlayer().name)
+    reportGameState({ playing: false, dist, deaths: this.deaths, won: false })
+    sendRunEnded(dist, this.coins, getPlayer().name, cause)
     this.reportRun(dist)
     this.hudText.setText(message)
     this.time.delayedCall(2000, () => this.scene.start('boot'))

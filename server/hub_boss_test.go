@@ -434,21 +434,29 @@ func TestBattleEndWritesMemoryAndCoachMarker(t *testing.T) {
 	}
 }
 
-// 途中局终（掉坑，未到 Boss 战）同样写记忆与教练标记。
+// 途中局终（掉坑/撞杆）写记忆与教练标记，死因必须准确、不出现「摔死」。
 func TestRunEndedWithoutBossWritesMemory(t *testing.T) {
 	srv, got := fakeMemoryAPI(t)
 	h, vl := newBossHub(t)
 	h.mem = &MemoryClient{BaseURL: srv.URL, APIKey: "k", MemoryID: "mem", MAC: "aa:bb"}
 	conn := dialHub(t, h)
 
-	sendWS(t, conn, map[string]any{"type": "run-ended", "dist": 128, "deaths": 3, "coins": 7})
-	select {
-	case body := <-got:
-		if !strings.Contains(body, "128 米") || !strings.Contains(body, "未到 Boss 战") {
-			t.Fatalf("途中局终摘要不符: %s", body)
+	for _, c := range []struct{ cause, want string }{
+		{"pit", "掉进坑里"},
+		{"bar", "撞上横杆"},
+	} {
+		sendWS(t, conn, map[string]any{"type": "run-ended", "dist": 128, "coins": 7, "cause": c.cause})
+		select {
+		case body := <-got:
+			if !strings.Contains(body, "128 米") || !strings.Contains(body, c.want) {
+				t.Fatalf("死因摘要不符（%s）: %s", c.cause, body)
+			}
+			if strings.Contains(body, "摔死") {
+				t.Fatalf("不应再出现笼统「摔死」: %s", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("途中局终未写记忆片段")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("途中局终未写记忆片段")
 	}
 	if spoken := strings.Join(vl.spoken, "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
 		t.Fatalf("途中局终也应触发教练标记:\n%s", spoken)
