@@ -30,6 +30,7 @@ export class PlayScene extends Phaser.Scene {
   private coinGroup!: Phaser.Physics.Arcade.StaticGroup
   private stamina = 1
   private staminaBar!: Phaser.GameObjects.Rectangle
+  private jetEmitter!: Phaser.GameObjects.Particles.ParticleEmitter
   private lastJumpAt = 0
   private finished = false
   private seed = 20261024
@@ -94,6 +95,17 @@ export class PlayScene extends Phaser.Scene {
     this.jumpKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
     ensureSparkTexture(this)
     ensureCoinTexture(this)
+    // 喷气尾焰：空中喊声推进时从脚底向下喷（紫/青双色霓虹火花）
+    this.jetEmitter = this.add.particles(0, 0, 'spark', {
+      speed: { min: 90, max: 180 },
+      angle: { min: 70, max: 110 },
+      gravityY: 200,
+      scale: { start: 0.9, end: 0 },
+      alpha: { start: 0.9, end: 0 },
+      lifespan: 300,
+      tint: [0x7a6ff0, 0x3ef0c8],
+      emitting: false,
+    })
     this.buildHud()
   }
 
@@ -120,7 +132,7 @@ export class PlayScene extends Phaser.Scene {
       this.coinBurst(coin.x, coin.y)
       coin.destroy()
       this.coins++
-      this.coinText.setText(`💰 ${this.coins}`)
+      this.coinText.setText(String(this.coins))
     })
   }
 
@@ -218,9 +230,10 @@ export class PlayScene extends Phaser.Scene {
       .rectangle(W - pad - 160, pad + 30, 160, 10, 0xffd23f)
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
+    // 金币图标用矢量纹理而非 emoji：中文字体对 emoji 码位可能是空白字形
+    this.add.image(W - pad - 138, pad + 49, 'coin').setScrollFactor(0)
     this.coinText = this.add
-      .text(W - pad, pad + 40, '💰 0', { ...FONT, color: '#ffd23f', fontSize: '18px' })
-      .setOrigin(1, 0)
+      .text(W - pad - 126, pad + 40, '0', { ...FONT, color: '#ffd23f', fontSize: '18px' })
       .setScrollFactor(0)
   }
 
@@ -247,17 +260,24 @@ export class PlayScene extends Phaser.Scene {
     const power = levelToPower(level)
     if (grounded) {
       this.playerBody.setAccelerationY(0)
+      this.jetEmitter.emitting = false
       this.stamina = Math.min(1, this.stamina + dt * STAMINA_RECOVER)
       if (power !== null && time - this.lastJumpAt > JUMP_COOLDOWN_MS) {
         this.lastJumpAt = time
         this.playerBody.setVelocityY(-power)
+        // 起跳蹬地小烟尘
+        this.jetEmitter.setPosition(this.player.x, this.player.y + 24)
+        this.jetEmitter.explode(8)
       }
     } else if (level >= JUMP_THRESHOLD && this.stamina > 0) {
       const norm = Math.min((level - JUMP_THRESHOLD) / (1 - JUMP_THRESHOLD), 1)
       this.playerBody.setAccelerationY(-THRUST_ACC * norm)
       this.stamina = Math.max(0, this.stamina - dt * STAMINA_DRAIN)
+      this.jetEmitter.setPosition(this.player.x, this.player.y + 26)
+      this.jetEmitter.emitting = true
     } else {
       this.playerBody.setAccelerationY(0)
+      this.jetEmitter.emitting = false
     }
     this.playerBody.setMaxVelocity(600, 520)
 
@@ -282,7 +302,7 @@ export class PlayScene extends Phaser.Scene {
 
     // 掉坑即局终：结算入账（距离+金币），回首页重连语音待命，由语音/空格再开
     if (this.player.y > H + 160) {
-      this.endRun(`摔进坑里！本局 ${dist} m · 💰 ${this.coins}`, 'pit')
+      this.endRun(`摔进坑里！本局 ${dist} m · 金币 ${this.coins}`, 'pit')
       return
     }
     if (this.player.x > this.level.worldWidth - 80) {
@@ -296,7 +316,7 @@ export class PlayScene extends Phaser.Scene {
     this.finished = true
     reportGameState({ playing: false, phase: 'boss', dist, deaths: this.deaths, won: false })
     sendBossEnter(this.coins, getPlayer().name)
-    this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
+    this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths, skin: this.skin })
   }
 
   // 局终统一出口（掉坑/撞杆，未到 Boss 战）：结算上报、按准确死因写记忆、回首页

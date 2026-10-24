@@ -171,7 +171,7 @@ export class BootScene extends Phaser.Scene {
     this.rows.forEach((r, i) => {
       const medal = ['🥇', '🥈', '🥉'][i] ?? `${i + 1}.`
       const tag = r.id === me.id ? ' ◂ 你' : ''
-      lines.push(`${medal}  ${r.name.padEnd(8, '　')} ${String(r.best_dist).padStart(4, ' ')} m   💰${r.total_coins}${tag}`)
+      lines.push(`${medal}  ${r.name.padEnd(8, '　')} ${String(r.best_dist).padStart(4, ' ')} m  金币${r.total_coins}${tag}`)
     })
     this.boardText.setText(lines.join('\n')).setPosition(
       W / 2 - this.boardText.width / 2,
@@ -217,7 +217,7 @@ export class BootScene extends Phaser.Scene {
         card.status.setText('已拥有')
       } else {
         card.status.setColor('#ffd23f')
-        card.status.setText('💰 ' + SKIN_PRICE + ' 解锁')
+        card.status.setText(SKIN_PRICE + ' 金币解锁')
       }
     }
   }
@@ -225,7 +225,7 @@ export class BootScene extends Phaser.Scene {
   private async refreshWallet() {
     const w = await fetchWallet()
     this.activeSkin = w.active
-    this.balanceText.setText('余额 💰' + String(w.balance))
+    this.balanceText.setText('余额 ' + String(w.balance) + ' 金币')
     this.updateSkinCards(w)
   }
 
