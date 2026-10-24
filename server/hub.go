@@ -39,6 +39,7 @@ type voiceLink interface {
 	SetPlaying(bool)
 	SendAudio(context.Context, []byte) error
 	Speak(text string, exact bool)
+	SpeakThen(text string, exact bool, after func())
 }
 
 // browserMsg 浏览器主通道文本消息的全集。
@@ -75,7 +76,7 @@ func NewGameHub(brain *Brain) *GameHub {
 	return &GameHub{
 		brain:        brain,
 		newRng:       func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
-		blockTimeout: 3 * time.Second,
+		blockTimeout: 3500 * time.Millisecond, // 窗口 2.5s + 上报余量
 	}
 }
 
@@ -323,11 +324,6 @@ func (h *GameHub) applyInput(in boss.Input) {
 		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
 	}
 	h.settleBoss(evs, err)
-	for _, e := range evs {
-		if e.Kind == boss.KindAttack {
-			h.armBlockTimeout()
-		}
-	}
 }
 
 // armBlockTimeout 攻击兜底：窗口内无格挡结果上报（页面僵死/断连）按失败判负。
@@ -349,6 +345,8 @@ func (h *GameHub) armBlockTimeout() {
 
 // settleBoss 收局并推送：battle-ended 时先回 idle 再推（读端收到
 // battle-ended 的瞬间相位必然已是 idle），语音回到待命连接。
+// 攻击事件押后：等「接我这招」台词播完再下发并开兜底计时——
+// 玩家要先听见攻击宣告，QTE 窗口才有意义（实机节奏踩过）。
 func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 	if err != nil {
 		h.pushBossEvents([]boss.Event{{Kind: "error", Message: err.Error()}})
@@ -357,10 +355,52 @@ func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
 		h.setPhase(phaseIdle)
 	}
-	h.pushBossEvents(evs)
+	if idx := attackIndex(evs); idx >= 0 {
+		pre, tail := evs[:idx], evs[idx:]
+		h.pushBoss(pre)
+		h.speakEvents(pre)
+		if line, exact, ok := challengerLine(tail[0]); ok {
+			h.speakThen(line, exact, func() {
+				// 回调跑在台词 goroutine 上，武装计时须补 bossMu（其内读写 battle/blockGen）
+				h.bossMu.Lock()
+				h.armBlockTimeout()
+				h.bossMu.Unlock()
+				h.pushBoss(tail)
+			})
+		} else {
+			h.armBlockTimeout()
+			h.pushBoss(tail)
+		}
+	} else {
+		h.pushBoss(evs)
+		h.speakEvents(evs)
+		// 轮到玩家时给一句短提示：Boss 台词播放期间上行静音，
+		// 玩家不知道何时开口（实机反馈「说了没反应」）
+		if h.battle != nil && h.battle.Phase() == boss.PhasePlayerTurn && hasBossGuess(evs) {
+			h.speak("该你了，报数！", true)
+		}
+	}
 	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
 		h.writeRunMemory(evs)
 	}
+}
+
+func attackIndex(evs []boss.Event) int {
+	for i, e := range evs {
+		if e.Kind == boss.KindAttack {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasBossGuess(evs []boss.Event) bool {
+	for _, e := range evs {
+		if e.Kind == boss.KindGuessResult && e.Turn == boss.TurnBoss && e.Hits < 3 {
+			return true
+		}
+	}
+	return false
 }
 
 // writeRunMemory 局终两件事：REST 写记忆片段（教练复盘的数据来源，失败仅
@@ -464,8 +504,30 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 	if len(evs) == 0 {
 		return
 	}
+	h.pushBoss(evs)
+	h.speakEvents(evs)
+}
+
+func (h *GameHub) pushBoss(evs []boss.Event) {
+	if len(evs) == 0 {
+		return
+	}
 	h.pushBrowserJSON(map[string]any{"type": "boss-events", "events": evs})
-	for _, e := range evs {
+}
+
+// speakEvents 台词生成。相邻的「玩家判定 + Boss 报数」合并成一句，
+// 每回合 TTS 轮次从 2 压到 1——攻击前的节奏实测太慢。
+func (h *GameHub) speakEvents(evs []boss.Event) {
+	for i := 0; i < len(evs); i++ {
+		e := evs[i]
+		next := i+1 < len(evs)
+		if next && e.Kind == boss.KindGuessResult && e.Turn == boss.TurnPlayer &&
+			evs[i+1].Kind == boss.KindGuessResult && evs[i+1].Turn == boss.TurnBoss {
+			h.speak(fmt.Sprintf("你猜中了%s位。听好了，我报：%s！",
+				hitsCn[e.Hits], speakDigits(evs[i+1].Guess)), true)
+			i++
+			continue
+		}
 		if line, exact, ok := challengerLine(e); ok {
 			h.speak(line, exact)
 		}
@@ -473,12 +535,24 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 }
 
 func (h *GameHub) speak(line string, exact bool) {
+	h.speakThen(line, exact, nil)
+}
+
+func (h *GameHub) speakThen(line string, exact bool, after func()) {
 	h.mu.RLock()
 	linx := h.linx
 	h.mu.RUnlock()
-	if linx != nil {
-		linx.Speak(line, exact)
+	if linx == nil {
+		if after != nil {
+			go after()
+		}
+		return
 	}
+	if after == nil {
+		linx.Speak(line, exact)
+		return
+	}
+	linx.SpeakThen(line, exact, after)
 }
 
 // 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报 + Boss 战动作。

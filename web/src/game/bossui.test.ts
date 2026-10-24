@@ -25,6 +25,7 @@ describe('applyBossEvents reducer', () => {
       { who: 'Boss', guess: '012', hits: 0 },
     ])
     expect(st.stage).toBe('player-turn') // Boss 未全中，轮到玩家
+    expect(st.hint).toBe('轮到你了——报数！') // 开口时机提示
   })
 
   it('攻击事件进入攻击阶段，亮位进情报表', () => {

@@ -38,6 +38,7 @@ type LinxClient struct {
 type speakReq struct {
 	text  string
 	exact bool
+	after func() // 台词播完（或发送失败/超时）后回调，恰好一次——用于「先说完再推进」的时序
 }
 
 // ttsWaitState 台词的 TTS 完成判定：必须观察到 start 之后的 stop 才算播完——
@@ -354,10 +355,23 @@ func (c *LinxClient) isEcho(text string) bool {
 
 // Speak 排队一句台词（非阻塞）；exact 为 true 时逐字直发而非交平台 LLM。
 func (c *LinxClient) Speak(text string, exact bool) {
+	c.enqueueSpeak(text, exact, nil)
+}
+
+// SpeakThen 排队一句台词并在其播完后回调——攻击事件押后到宣告说完再下发，
+// 玩家听到「接我这招」的瞬间 QTE 窗口才开。
+func (c *LinxClient) SpeakThen(text string, exact bool, after func()) {
+	c.enqueueSpeak(text, exact, after)
+}
+
+func (c *LinxClient) enqueueSpeak(text string, exact bool, after func()) {
 	select {
-	case c.speakCh <- speakReq{text, exact}:
+	case c.speakCh <- speakReq{text, exact, after}:
 	default:
 		log.Printf("linx: 台词队列已满，丢弃 %q", text)
+		if after != nil {
+			go after()
+		}
 	}
 }
 
@@ -374,7 +388,13 @@ func (c *LinxClient) speakLoop(ctx context.Context) {
 
 // deliverSpeak 发一条 detect。必须串行：新 detect 会打断未播完的 TTS
 // （spike 实测 tts stop is_aborted=true），发完等 tts stop 再放下一条。
+// after 在所有出口都恰好触发一次——押后的游戏事件不能因台词丢失而永久卡住。
 func (c *LinxClient) deliverSpeak(ctx context.Context, req speakReq) {
+	defer func() {
+		if req.after != nil {
+			go req.after()
+		}
+	}()
 	deadline := time.Now().Add(4 * time.Second) // Boss 进场后会话可能还在重连
 	for {
 		c.mu.Lock()

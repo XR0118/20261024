@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,19 +18,45 @@ import (
 )
 
 // voiceLink 的假实现：记录 SetPlaying 调用（三阶段联动）与台词（台词层）。
+// 台词可能来自超时计时器/异步回调 goroutine，访问须加锁。
 type fakeVoiceLink struct {
+	mu     sync.Mutex
 	calls  []bool
 	spoken []string // "exact:台词" | "llm:事件标记"
 }
 
-func (f *fakeVoiceLink) SetPlaying(p bool)                       { f.calls = append(f.calls, p) }
+func (f *fakeVoiceLink) SetPlaying(p bool) {
+	f.mu.Lock()
+	f.calls = append(f.calls, p)
+	f.mu.Unlock()
+}
 func (f *fakeVoiceLink) SendAudio(context.Context, []byte) error { return nil }
 func (f *fakeVoiceLink) Speak(text string, exact bool) {
 	tag := "llm"
 	if exact {
 		tag = "exact"
 	}
+	f.mu.Lock()
 	f.spoken = append(f.spoken, tag+":"+text)
+	f.mu.Unlock()
+}
+
+// SpeakThen 模拟真实链路的异步回调：台词入列后回调稍后触发，
+// 与 speakLoop goroutine 的时序一致（也避免测试里重入 bossMu 死锁）。
+func (f *fakeVoiceLink) SpeakThen(text string, exact bool, after func()) {
+	f.Speak(text, exact)
+	go after()
+}
+
+func (f *fakeVoiceLink) snapshot() ([]bool, []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.calls...), append([]string(nil), f.spoken...)
+}
+
+func spokenSnapshot(f *fakeVoiceLink) []string {
+	_, spoken := f.snapshot()
+	return spoken
 }
 
 func newBossHub(t *testing.T) (*GameHub, *fakeVoiceLink) {
@@ -184,8 +211,8 @@ func TestPhaseThreeStatesAndCompat(t *testing.T) {
 	waitPhase(t, h, "boss")
 	sendWS(t, conn, map[string]any{"type": "game-state", "state": map[string]any{"playing": false, "dist": 300}})
 	waitPhase(t, h, "idle")
-	if len(vl.calls) != 2 || vl.calls[0] != true || vl.calls[1] != false {
-		t.Fatalf("语音链路应只在 running↔非running 切换（boss 保持连接），got %v", vl.calls)
+	if calls, _ := vl.snapshot(); len(calls) != 2 || calls[0] != true || calls[1] != false {
+		t.Fatalf("语音链路应只在 running↔非running 切换（boss 保持连接），got %v", calls)
 	}
 	// 未知相位串按旧口径推导，不当合法 phase 存
 	sendWS(t, conn, map[string]any{"type": "game-state", "state": map[string]any{"phase": "paused", "playing": true}})
@@ -233,8 +260,8 @@ func TestLegacyGameStateDuringBossKeepsVoice(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(vl.calls) != 0 {
-		t.Fatalf("战斗中旧式上报不应拨动语音链路，got %v", vl.calls)
+	if calls, _ := vl.snapshot(); len(calls) != 0 {
+		t.Fatalf("战斗中旧式上报不应拨动语音链路，got %v", calls)
 	}
 
 	h.handleSTT("我投降了")
@@ -329,9 +356,12 @@ func TestSecondAttackNotKilledByFirstTimer(t *testing.T) {
 	h.handleSTT("报数 九八七")              // Boss 候选集只剩旧密数 → 立即再全中
 	t2 := time.Now()
 	sawAttack2 := false
-	for _, e := range readBossEvents(t, conn) {
-		if e.Kind == "attack" {
-			sawAttack2 = true
+	// 攻击事件押后到宣告台词的回调（异步）：可能分两次推送到达
+	for read := 0; read < 2 && !sawAttack2; read++ {
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack2 = true
+			}
 		}
 	}
 	if !sawAttack2 {
@@ -361,26 +391,17 @@ func TestBossEventsAreSpoken(t *testing.T) {
 	h.handleSTT("我投降了")
 	readBossEvents(t, conn) // battle-ended
 
-	spoken := strings.Join(vl.spoken, "\n")
+	spoken := strings.Join(spokenSnapshot(vl), "\n")
 	for _, want := range []string{
 		"exact:请报出你的三位密数",
 		"llm:【BOSS 来了】",
-		"exact:听好了，我报：零一二", // Boss 首报恒为 012
+		// 玩家判定与 Boss 报数合并成一句（回合 TTS 轮次减半），零命中随句带入
+		"exact:你猜中了零位。听好了，我报：零一二！",
 		"exact:认输了？明智",
 	} {
 		if !strings.Contains(spoken, want) {
 			t.Errorf("台词缺失 %q\nspoken:\n%s", want, spoken)
 		}
-	}
-	// 玩家九八七对 seed-7 密数零命中——零命中台词有三句随机变体
-	zeroHit := false
-	for _, v := range []string{"零位", "一个都没中"} {
-		if strings.Contains(spoken, "exact:"+v) {
-			zeroHit = true
-		}
-	}
-	if !zeroHit {
-		t.Errorf("零命中台词缺失\nspoken:\n%s", spoken)
 	}
 }
 
@@ -429,7 +450,7 @@ func TestBattleEndWritesMemoryAndCoachMarker(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("局终未写记忆片段")
 	}
-	if spoken := strings.Join(vl.spoken, "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
+	if spoken := strings.Join(spokenSnapshot(vl), "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
 		t.Fatalf("应注入【本局结束】标记触发教练总结:\n%s", spoken)
 	}
 }
@@ -458,7 +479,7 @@ func TestRunEndedWithoutBossWritesMemory(t *testing.T) {
 			t.Fatal("途中局终未写记忆片段")
 		}
 	}
-	if spoken := strings.Join(vl.spoken, "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
+	if spoken := strings.Join(spokenSnapshot(vl), "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
 		t.Fatalf("途中局终也应触发教练标记:\n%s", spoken)
 	}
 }

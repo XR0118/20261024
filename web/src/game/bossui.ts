@@ -57,7 +57,9 @@ function applyOne(st: BossUiState, e: BossEvent): BossUiState {
         guess: e.guess ?? '',
         hits: e.hits ?? 0,
       }
-      return { ...st, rows: [...st.rows, row] }
+      // Boss 报完未全中=轮到玩家：提示开口时机（台词播放期间上行静音）
+      const hint = e.turn === 'boss' && (e.hits ?? 0) < 3 ? '轮到你了——报数！' : st.hint
+      return { ...st, rows: [...st.rows, row], hint }
     }
     case 'attack':
       return { ...st, stage: 'attack', hint: 'Boss 全中——攻击！格挡它！' }
