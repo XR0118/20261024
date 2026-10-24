@@ -71,9 +71,12 @@ func main() {
 		log.Fatalf("load store: %v", err)
 	}
 
+	hub.SetStore(store)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/leaderboard", leaderboardHandler(store))
 	mux.HandleFunc("POST /api/run", reportRunHandler(store))
+	mux.HandleFunc("GET /api/wallet", walletHandler(store))
 	mux.HandleFunc("GET /ws", hub.HandleBrowserWS)
 	mux.HandleFunc("POST /api/chat/stream", hub.HandleLinxChat)
 	mux.HandleFunc("POST /intent", hub.HandleIntent)

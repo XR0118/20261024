@@ -44,15 +44,16 @@ type voiceLink interface {
 
 // browserMsg 浏览器主通道文本消息的全集。
 type browserMsg struct {
-	Type    string    `json:"type"`
-	State   GameState `json:"state"`
-	Coins   int       `json:"coins"`
-	Action  string    `json:"action"`
-	Digits  string    `json:"digits"`
-	Blocked *bool     `json:"blocked"`
-	Dist    int       `json:"dist"`
-	Name    string    `json:"name,omitempty"`
-	Cause   string    `json:"cause,omitempty"` // 途中局终死因：pit=掉坑，bar=撞杆
+	Type     string    `json:"type"`
+	State    GameState `json:"state"`
+	Coins    int       `json:"coins"`
+	Action   string    `json:"action"`
+	Digits   string    `json:"digits"`
+	Blocked  *bool     `json:"blocked"`
+	Dist     int       `json:"dist"`
+	Name     string    `json:"name,omitempty"`
+	PlayerID string    `json:"player_id,omitempty"`
+	Cause    string    `json:"cause,omitempty"` // 途中局终死因：pit=掉坑，bar=撞杆
 }
 
 type GameHub struct {
@@ -64,6 +65,9 @@ type GameHub struct {
 	bconn      *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
 	mem        *MemoryClient   // 局终记忆写入；nil=未配置，无操作
 	playerName string          // 当前玩家名（boss-enter/run-ended 带上）：记忆摘要按名区分试玩者
+	playerID   string          // 浏览器连接上报的玩家 id：语音商店的扣费主体
+	store      *Store          // 语音商店的档案读写；nil=未接线
+	shop       SkinShop        // 定价快照；纯决策逻辑在 shop.go
 
 	bossMu       sync.Mutex
 	battle       *boss.Battle
@@ -77,6 +81,7 @@ func NewGameHub(brain *Brain) *GameHub {
 		brain:        brain,
 		newRng:       func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
 		blockTimeout: 3500 * time.Millisecond, // 窗口 2.5s + 上报余量
+		shop:         SkinShop{Price: skinPrice},
 	}
 }
 
@@ -99,7 +104,15 @@ func (h *GameHub) handleSTT(text string) {
 		h.applyBossSTT(text)
 		return
 	}
-	actions := gameActions(classify(text))
+	// 「换个造型」直达商店：台词走 chat 链路，这里只保证换装事件下行一致
+	it := classify(text)
+	if it == intentChangeSkin {
+		if _, action := h.shopHandle(); action != nil {
+			h.pushBrowserJSON(map[string]any{"type": "game-action", "actions": []map[string]any{action}})
+		}
+		return
+	}
+	actions := gameActions(it)
 	if len(actions) == 0 {
 		return
 	}
@@ -423,6 +436,7 @@ func (h *GameHub) writeRunMemory(evs []boss.Event) {
 	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：Boss 战%s",
 		h.playerNameOf(), st.Dist, ended.FinalCoins, outcomeText(ended.Outcome))
 	h.speak("【本局结束】"+fact, false)
+	h.speakWalletLine(ended.FinalCoins)
 	h.writeMemory("【对局】" + fact)
 }
 
@@ -450,6 +464,7 @@ func (h *GameHub) handleRunEnded(m browserMsg) {
 	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：%s",
 		h.playerNameOf(), m.Dist, m.Coins, causeText(m.Cause))
 	h.speak("【本局结束】"+fact, false)
+	h.speakWalletLine(m.Coins)
 	h.writeMemory("【对局】" + fact)
 }
 
@@ -604,6 +619,9 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 			}
 			switch msg.Type {
 			case "game-state":
+				if msg.PlayerID != "" {
+					h.rememberPlayer(msg.PlayerID)
+				}
 				h.applyGameState(msg.State)
 			case "boss-enter":
 				if msg.Name != "" {
@@ -639,10 +657,22 @@ func (h *GameHub) HandleLinxChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reply, actions, err := h.brain.Generate(r.Context(), req.Details.Msg, h.State())
-	if err != nil {
-		log.Printf("brain error: %v", err)
-		reply, actions = "哎呀，我脑子转不动了，再来一次？", nil
+	var reply string
+	var actions []map[string]any
+	// 「换个造型」不走通用台词生成：播什么取决于购买结果（决策见 shop.go）
+	if classify(req.Details.Msg) == intentChangeSkin {
+		line, action := h.shopHandle()
+		reply = line
+		if action != nil {
+			actions = []map[string]any{action}
+		}
+	} else {
+		var err error
+		reply, actions, err = h.brain.Generate(r.Context(), req.Details.Msg, h.State())
+		if err != nil {
+			log.Printf("brain error: %v", err)
+			reply, actions = "哎呀，我脑子转不动了，再来一次？", nil
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -764,4 +794,61 @@ func wsjsonRead(ctx context.Context, conn *websocket.Conn, v any) error {
 
 func wsjsonWrite(ctx context.Context, conn *websocket.Conn, v any) error {
 	return wsjson.Write(ctx, conn, v)
+}
+
+func (h *GameHub) rememberPlayer(id string) {
+	h.mu.Lock()
+	h.playerID = id
+	h.mu.Unlock()
+}
+
+// SetStore 注入档案存储：语音商店的扣费主体（main 装配时调用）
+func (h *GameHub) SetStore(s *Store) {
+	h.mu.Lock()
+	h.store = s
+	h.mu.Unlock()
+}
+
+// shopHandle 「换个造型」全链路：纯决策（shop.Decide）→ 执行（Store 扣费/切换）
+// → 主持人台词 + 浏览器换装事件。玩家未识别时只播提示不动账。
+func (h *GameHub) shopHandle() (string, map[string]any) {
+	h.mu.Lock()
+	store, id := h.store, h.playerID
+	h.mu.Unlock()
+	if store == nil || id == "" {
+		return "我还没认出你呢，回首页待命再说一次！", nil
+	}
+	w := store.WalletOf(id)
+	out := h.shop.Decide(w.Owned, w.Active, w.Balance)
+	var err error
+	if out.Kind == kindBought {
+		err = store.BuySkin(id, out.Skin, h.shop.Price)
+	} else if out.Kind == kindSwitched {
+		err = store.SwitchSkin(id, out.Skin)
+	}
+	if err != nil {
+		log.Printf("shop: %v", err)
+		return "哎呀，商店出了点问题，再试一次？", nil
+	}
+	return shopLine(out), map[string]any{"action": "change-skin", "params": map[string]any{"skin": out.Skin}}
+}
+
+// speakWalletLine 结算播报余额；付费造型未解锁时附一句语音引导
+// （已拥有就不再打扰——引导的使命是带出商店入口）。入账（/api/run）与
+// 本播报并发，稍候它落地再读，否则播出的余额比真实少一局。
+func (h *GameHub) speakWalletLine(runCoins int) {
+	time.AfterFunc(1200*time.Millisecond, func() {
+		h.mu.RLock()
+		store, id := h.store, h.playerID
+		h.mu.RUnlock()
+		if store == nil || id == "" {
+			return
+		}
+		w := store.WalletOf(id)
+		line := fmt.Sprintf("本局入账 %d 金币，余额 %d。", runCoins, w.Balance)
+		if !hasSkin(w.Owned, skinWave) {
+			line += "想要声波精灵，就说『换个造型』！"
+		}
+		h.speak(line, false)
+	})
 }
