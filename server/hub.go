@@ -435,6 +435,7 @@ func (h *GameHub) writeRunMemory(evs []boss.Event) {
 	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：Boss 战%s",
 		h.playerNameOf(), st.Dist, ended.FinalCoins, outcomeText(ended.Outcome))
 	h.speak("【本局结束】"+fact, false)
+	h.speakWalletLine(ended.FinalCoins)
 	h.writeMemory("【对局】" + fact)
 }
 
@@ -462,6 +463,7 @@ func (h *GameHub) handleRunEnded(m browserMsg) {
 	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：%s",
 		h.playerNameOf(), m.Dist, m.Coins, causeText(m.Cause))
 	h.speak("【本局结束】"+fact, false)
+	h.speakWalletLine(m.Coins)
 	h.writeMemory("【对局】" + fact)
 }
 
@@ -828,4 +830,24 @@ func (h *GameHub) shopHandle() (string, map[string]any) {
 		return "哎呀，商店出了点问题，再试一次？", nil
 	}
 	return shopLine(out), map[string]any{"action": "change-skin", "params": map[string]any{"skin": out.Skin}}
+}
+
+// speakWalletLine 结算播报余额；付费造型未解锁时附一句语音引导
+// （已拥有就不再打扰——引导的使命是带出商店入口）。入账（/api/run）与
+// 本播报并发，稍候它落地再读，否则播出的余额比真实少一局。
+func (h *GameHub) speakWalletLine(runCoins int) {
+	time.AfterFunc(1200*time.Millisecond, func() {
+		h.mu.RLock()
+		store, id := h.store, h.playerID
+		h.mu.RUnlock()
+		if store == nil || id == "" {
+			return
+		}
+		w := store.WalletOf(id)
+		line := fmt.Sprintf("本局入账 %d 金币，余额 %d。", runCoins, w.Balance)
+		if !hasSkin(w.Owned, skinWave) {
+			line += "想要声波精灵，就说『换个造型』！"
+		}
+		h.speak(line, false)
+	})
 }

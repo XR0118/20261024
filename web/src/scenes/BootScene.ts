@@ -8,6 +8,7 @@ import {
   ttsArrivedAndDone,
 } from '../audio/voice'
 import { fetchWallet, getPlayer, setPlayerName } from '../player'
+import { buildSkin, SKIN_PRICE, SkinId, startIdleBreathing } from '../game/skin'
 
 const W = 960
 const H = 540
@@ -23,6 +24,7 @@ export class BootScene extends Phaser.Scene {
   private meText!: Phaser.GameObjects.Text
   private balanceText!: Phaser.GameObjects.Text
   private activeSkin = 'bean'
+  private skinCards: { id: string; bg: Phaser.GameObjects.Rectangle; status: Phaser.GameObjects.Text }[] = []
   private lastReport = 0
   private pendingSeed: number | undefined | null = null // null=未挂起；undefined=start；数字=load_level seed
   private prepareAt = 0
@@ -35,7 +37,8 @@ export class BootScene extends Phaser.Scene {
     // 语音换装：更新待命造型并刷新余额（T11 的角色卡会订阅同一状态）
     if (a.action === 'change-skin') {
       this.activeSkin = a.params?.skin === 'wave' ? 'wave' : 'bean'
-      void this.refreshWallet()
+      this.buildSkinCards()
+    void this.refreshWallet()
       return
     }
     if (a.action === 'prepare') {
@@ -107,6 +110,7 @@ export class BootScene extends Phaser.Scene {
     this.balanceText = this.add
       .text(W - 20, 30, '余额 …', { color: '#ffd23f', fontSize: '18px' })
       .setOrigin(1, 0)
+    this.buildSkinCards()
     void this.refreshWallet()
 
     this.refreshMe()
@@ -172,10 +176,52 @@ export class BootScene extends Phaser.Scene {
     )
   }
 
+  // 角色卡纯展示：预览+价格/拥有状态。购买与切换只有语音一条路（Spec #23：不设点击）
+  private buildSkinCards() {
+    // Scene 实例跨 restart 复用，上次会话的卡片引用已销毁，必须先清空
+    this.skinCards = []
+    const spots: { id: SkinId; cx: number; cy: number }[] = [
+      { id: 'bean', cx: 140, cy: 405 },
+      { id: 'wave', cx: 820, cy: 405 },
+    ]
+    for (const spot of spots) {
+      const bg = this.add.rectangle(spot.cx, spot.cy, 190, 170, 0x171826).setStrokeStyle(2, 0x3a3d5c)
+      const preview = buildSkin(this, spot.id)
+      preview.setScale(0.85)
+      preview.setPosition(spot.cx, spot.cy - 35)
+      startIdleBreathing(this, preview)
+      this.add
+        .text(spot.cx, spot.cy + 15, spot.id === 'bean' ? '跳跳豆' : '声波精灵', { color: '#ffffff', fontSize: '16px' })
+        .setOrigin(0.5)
+      const status = this.add.text(spot.cx, spot.cy + 45, '', { fontSize: '14px' }).setOrigin(0.5)
+      this.skinCards.push({ id: spot.id, bg, status })
+    }
+    this.updateSkinCards({ owned: ['bean'], active: this.activeSkin })
+  }
+
+  private updateSkinCards(w: { owned: string[]; active: string }) {
+    for (const card of this.skinCards) {
+      const owned = w.owned.includes(card.id)
+      const active = w.active === card.id
+      card.bg.setStrokeStyle(2, active ? 0x7a6ff0 : 0x3a3d5c)
+      if (active) {
+        card.status.setColor('#7a6ff0')
+        card.status.setText('● 穿着中')
+      } else if (owned) {
+        card.status.setColor('#38b764')
+        card.status.setText('已拥有')
+      } else {
+        card.status.setColor('#ffd23f')
+        card.status.setText('💰 ' + SKIN_PRICE + ' 解锁')
+      }
+    }
+  }
+
   private async refreshWallet() {
     const w = await fetchWallet()
     this.activeSkin = w.active
     this.balanceText.setText('余额 💰' + String(w.balance))
+    this.updateSkinCards(w)
   }
 
   private refreshMe() {
