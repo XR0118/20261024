@@ -49,7 +49,7 @@ func TestReportRunCreditsBalance(t *testing.T) {
 	s.ReportRun("a", "阿福", 100, 3)
 	s.ReportRun("a", "阿福", 80, 2)
 
-	if got := s.BalanceOf("a"); got != 5 {
+	if got := s.WalletOf("a").Balance; got != 5 {
 		t.Fatalf("入账应同加余额：期望 5，got %d", got)
 	}
 }
@@ -65,7 +65,7 @@ func TestLoadLegacyDataHasZeroBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("旧数据应可加载: %v", err)
 	}
-	if got := s.BalanceOf("old"); got != 0 {
+	if got := s.WalletOf("old").Balance; got != 0 {
 		t.Fatalf("存量不折算，余额应为 0，got %d", got)
 	}
 }

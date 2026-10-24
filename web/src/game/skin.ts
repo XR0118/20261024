@@ -2,7 +2,6 @@ import Phaser from 'phaser'
 
 // 造型 = GLOSSARY「角色」：纯视觉皮肤。碰撞盒固定为旧占位矩形的 36×48，跳跃手感不随造型变
 export type SkinId = 'bean' | 'wave'
-export const SKIN_IDS: SkinId[] = ['bean', 'wave']
 export const SKIN_PRICE = 20
 export const SKIN_BODY_W = 36
 export const SKIN_BODY_H = 48

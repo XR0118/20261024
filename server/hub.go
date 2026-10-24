@@ -105,13 +105,14 @@ func (h *GameHub) handleSTT(text string) {
 		return
 	}
 	// 「换个造型」直达商店：台词走 chat 链路，这里只保证换装事件下行一致
-	if classify(text) == intentChangeSkin {
+	it := classify(text)
+	if it == intentChangeSkin {
 		if _, action := h.shopHandle(); action != nil {
 			h.pushBrowserJSON(map[string]any{"type": "game-action", "actions": []map[string]any{action}})
 		}
 		return
 	}
-	actions := gameActions(classify(text))
+	actions := gameActions(it)
 	if len(actions) == 0 {
 		return
 	}
@@ -820,9 +821,9 @@ func (h *GameHub) shopHandle() (string, map[string]any) {
 	w := store.WalletOf(id)
 	out := h.shop.Decide(w.Owned, w.Active, w.Balance)
 	var err error
-	if out.Kind == KindBought {
+	if out.Kind == kindBought {
 		err = store.BuySkin(id, out.Skin, h.shop.Price)
-	} else if out.Kind == KindSwitched {
+	} else if out.Kind == kindSwitched {
 		err = store.SwitchSkin(id, out.Skin)
 	}
 	if err != nil {

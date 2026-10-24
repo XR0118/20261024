@@ -129,16 +129,6 @@ func reportRunHandler(store *Store) http.HandlerFunc {
 	}
 }
 
-// BalanceOf 返回玩家可支配余额；未知玩家按新号对待，从零攒起。
-func (s *Store) BalanceOf(id string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if p, ok := s.players[id]; ok {
-		return p.Balance
-	}
-	return 0
-}
-
 func walletHandler(store *Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")

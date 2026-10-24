@@ -10,22 +10,22 @@ func TestShopDecide(t *testing.T) {
 	shop := SkinShop{Price: 20}
 
 	got := shop.Decide([]string{"bean"}, "bean", 25)
-	if got.Kind != KindBought || got.Skin != "wave" || got.BalanceAfter != 5 {
+	if got.Kind != kindBought || got.Skin != "wave" || got.BalanceAfter != 5 {
 		t.Fatalf("want bought wave balance-after 5, got %+v", got)
 	}
 
 	got = shop.Decide([]string{"bean"}, "bean", 8)
-	if got.Kind != KindShort || got.Skin != "wave" || got.Short != 12 {
+	if got.Kind != kindShort || got.Skin != "wave" || got.Short != 12 {
 		t.Fatalf("want short of 12, got %+v", got)
 	}
 
 	got = shop.Decide([]string{"bean", "wave"}, "bean", 0)
-	if got.Kind != KindSwitched || got.Skin != "wave" {
+	if got.Kind != kindSwitched || got.Skin != "wave" {
 		t.Fatalf("want switched to wave, got %+v", got)
 	}
 
 	got = shop.Decide([]string{"bean", "wave"}, "wave", 0)
-	if got.Kind != KindSwitched || got.Skin != "bean" {
+	if got.Kind != kindSwitched || got.Skin != "bean" {
 		t.Fatalf("want switched to bean, got %+v", got)
 	}
 }

@@ -37,8 +37,7 @@ export class BootScene extends Phaser.Scene {
     // 语音换装：更新待命造型并刷新余额（T11 的角色卡会订阅同一状态）
     if (a.action === 'change-skin') {
       this.activeSkin = a.params?.skin === 'wave' ? 'wave' : 'bean'
-      this.buildSkinCards()
-    void this.refreshWallet()
+      void this.refreshWallet()
       return
     }
     if (a.action === 'prepare') {

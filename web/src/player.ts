@@ -35,8 +35,7 @@ export function reportRun(dist: number, coins: number): Promise<Response> {
   })
 }
 
-
-// 钱包查询：失败返回 0——余额是展示性信息，不应阻塞首页
+// 钱包查询：失败返回零值——余额是展示性信息，不应阻塞首页
 export type Wallet = { owned: string[]; active: string; balance: number; total_coins: number }
 export async function fetchWallet(): Promise<Wallet> {
   const me = getPlayer()
