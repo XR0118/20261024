@@ -34,3 +34,13 @@ export function reportRun(dist: number, coins: number): Promise<Response> {
     body: JSON.stringify({ id: me.id, name: me.name, dist, coins }),
   })
 }
+
+
+// 钱包查询：失败返回 0——余额是展示性信息，不应阻塞首页
+export async function fetchBalance(): Promise<number> {
+  const me = getPlayer()
+  const res = await fetch('/api/wallet?id=' + encodeURIComponent(me.id))
+  if (!res.ok) return 0
+  const data = (await res.json()) as { balance: number }
+  return data.balance ?? 0
+}

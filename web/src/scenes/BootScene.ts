@@ -7,7 +7,7 @@ import {
   ttsArrived,
   ttsArrivedAndDone,
 } from '../audio/voice'
-import { getPlayer, setPlayerName } from '../player'
+import { fetchBalance, getPlayer, setPlayerName } from '../player'
 
 const W = 960
 const H = 540
@@ -21,6 +21,7 @@ export class BootScene extends Phaser.Scene {
   private boardText!: Phaser.GameObjects.Text
   private hintText!: Phaser.GameObjects.Text
   private meText!: Phaser.GameObjects.Text
+  private balanceText!: Phaser.GameObjects.Text
   private lastReport = 0
   private pendingSeed: number | undefined | null = null // null=未挂起；undefined=start；数字=load_level seed
   private prepareAt = 0
@@ -96,6 +97,11 @@ export class BootScene extends Phaser.Scene {
         }
       })
 
+    this.balanceText = this.add
+      .text(W - 20, 30, '余额 …', { color: '#ffd23f', fontSize: '18px' })
+      .setOrigin(1, 0)
+    void this.refreshBalance()
+
     this.refreshMe()
     void this.refreshBoard()
 
@@ -157,6 +163,10 @@ export class BootScene extends Phaser.Scene {
       W / 2 - this.boardText.width / 2,
       200,
     )
+  }
+
+  private async refreshBalance() {
+    this.balanceText.setText('余额 💰' + String(await fetchBalance()))
   }
 
   private refreshMe() {

@@ -18,6 +18,7 @@ type Player struct {
 	BestDist   int       `json:"best_dist"`
 	TotalCoins int       `json:"total_coins"`
 	Runs       int       `json:"runs"`
+	Balance    int       `json:"balance"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
@@ -57,6 +58,7 @@ func (s *Store) ReportRun(id, name string, dist, coins int) Player {
 		p.BestDist = dist
 	}
 	p.TotalCoins += coins
+	p.Balance += coins
 	p.Runs++
 	p.UpdatedAt = time.Now()
 	s.saveLocked()
@@ -121,5 +123,27 @@ func reportRunHandler(store *Store) http.HandlerFunc {
 		log.Printf("run: %s dist=%d coins=%d (best=%d total=%d)", req.Name, req.Dist, req.Coins, p.BestDist, p.TotalCoins)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(p)
+	}
+}
+
+// BalanceOf 返回玩家可支配余额；未知玩家按新号对待，从零攒起。
+func (s *Store) BalanceOf(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.players[id]; ok {
+		return p.Balance
+	}
+	return 0
+}
+
+func walletHandler(store *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"balance": store.BalanceOf(id)})
 	}
 }
