@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -48,6 +49,8 @@ type browserMsg struct {
 	Action  string    `json:"action"`
 	Digits  string    `json:"digits"`
 	Blocked *bool     `json:"blocked"`
+	Dist    int       `json:"dist"`
+	Deaths  int       `json:"deaths"`
 }
 
 type GameHub struct {
@@ -57,6 +60,7 @@ type GameHub struct {
 	brain *Brain
 	linx  voiceLink
 	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	mem   *MemoryClient   // 局终记忆写入；nil=未配置，无操作
 
 	bossMu       sync.Mutex
 	battle       *boss.Battle
@@ -352,6 +356,62 @@ func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 		h.setPhase(phaseIdle)
 	}
 	h.pushBossEvents(evs)
+	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
+		h.writeRunMemory(evs)
+	}
+}
+
+// writeRunMemory 局终两件事：REST 写记忆片段（教练复盘的数据来源，失败仅
+// 日志）；向人格注入【本局结束】标记——按 persona 提示词教练默认做总结。
+func (h *GameHub) writeRunMemory(evs []boss.Event) {
+	var ended *boss.Event
+	for i := range evs {
+		if evs[i].Kind == boss.KindBattleEnded {
+			ended = &evs[i]
+		}
+	}
+	if ended == nil {
+		return
+	}
+	st := h.State()
+	fact := fmt.Sprintf("距离 %d 米，摔死 %d 次，金币 %d，Boss 战：%s",
+		st.Dist, st.Deaths, ended.FinalCoins, outcomeText(ended.Outcome))
+	h.speak("【本局结束】"+fact, false)
+	h.writeMemory("【对局】" + fact)
+}
+
+// handleRunEnded 途中局终（掉坑/撞杆，未到 Boss 战）的记忆与教练标记。
+func (h *GameHub) handleRunEnded(m browserMsg) {
+	fact := fmt.Sprintf("距离 %d 米，摔死 %d 次，金币 %d，未到 Boss 战（途中局终）",
+		m.Dist, m.Deaths, m.Coins)
+	h.speak("【本局结束】"+fact, false)
+	h.writeMemory("【对局】" + fact)
+}
+
+func (h *GameHub) writeMemory(summary string) {
+	if h.mem == nil {
+		return
+	}
+	mem := h.mem
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := mem.WriteRun(ctx, summary); err != nil {
+			log.Printf("memory write: %v", err)
+		}
+	}()
+}
+
+func outcomeText(o boss.Outcome) string {
+	switch o {
+	case boss.OutcomeWin:
+		return "胜（金币翻倍）"
+	case boss.OutcomeLose:
+		return "负（格挡失败）"
+	case boss.OutcomeSurrender:
+		return "认输"
+	}
+	return string(o)
 }
 
 // abandonBoss 页面重载即弃局：刷新后的新页面不应接手旧战斗状态。
@@ -433,6 +493,8 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 				h.enterBoss(msg.Coins)
 			case "boss-action":
 				h.bossAction(msg)
+			case "run-ended":
+				h.handleRunEnded(msg)
 			}
 		}
 	}

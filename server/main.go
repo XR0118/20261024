@@ -26,6 +26,20 @@ func main() {
 	hub.SetLinxClient(lc)
 	go lc.Run(context.Background())
 
+	// 教练复盘的记忆写入（ADR-0003 决策 3）：凭据经 env 注入，
+	// 未配置时无操作——demo 与本地开发不依赖灵矽记忆 API。
+	hub.mem = &MemoryClient{
+		BaseURL:  "https://xrobo.qiniu.com",
+		APIKey:   os.Getenv("LINGX_API_KEY"),
+		MemoryID: os.Getenv("LINGX_MEMORY_ID"),
+		MAC:      *mac,
+	}
+	if hub.mem.Enabled() {
+		log.Printf("memory: 教练记忆写入已启用（memory_id=%s）", hub.mem.MemoryID)
+	} else {
+		log.Printf("memory: 未配置 LINGX_API_KEY / LINGX_MEMORY_ID，复盘记忆不写入")
+	}
+
 	store, err := LoadStore("data.json")
 	if err != nil {
 		log.Fatalf("load store: %v", err)

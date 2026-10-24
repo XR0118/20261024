@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -380,5 +381,76 @@ func TestBossEventsAreSpoken(t *testing.T) {
 	}
 	if !zeroHit {
 		t.Errorf("零命中台词缺失\nspoken:\n%s", spoken)
+	}
+}
+
+// fakeMemoryAPI 收集第一条写入的节点内容。
+func fakeMemoryAPI(t *testing.T) (*httptest.Server, <-chan string) {
+	t.Helper()
+	got := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		select {
+		case got <- string(b):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, got
+}
+
+// Boss 战局终：写记忆片段（按设备 MAC 归档）+ 向人格注入【本局结束】
+// 标记触发教练总结。
+func TestBattleEndWritesMemoryAndCoachMarker(t *testing.T) {
+	srv, got := fakeMemoryAPI(t)
+	h, vl := newBossHub(t)
+	h.mem = &MemoryClient{BaseURL: srv.URL, APIKey: "k", MemoryID: "mem", MAC: "98:a3:16:f9:d9:35"}
+	conn := dialHub(t, h)
+
+	enterBattle(t, h, conn, "一二三")
+	sendWS(t, conn, map[string]any{"type": "game-state", "state": map[string]any{"phase": "boss", "dist": 300, "deaths": 2}})
+	// game-state 异步处理：等距离落库再投降，否则摘要读到 0
+	deadline := time.Now().Add(2 * time.Second)
+	for h.State().Dist != 300 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if h.State().Dist != 300 {
+		t.Fatal("game-state 未落库")
+	}
+	h.handleSTT("我投降了")
+	readBossEvents(t, conn)
+
+	select {
+	case body := <-got:
+		if !strings.Contains(body, "300 米") || !strings.Contains(body, "认输") || !strings.Contains(body, "Boss 战") {
+			t.Fatalf("记忆摘要应含距离与结局: %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("局终未写记忆片段")
+	}
+	if spoken := strings.Join(vl.spoken, "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
+		t.Fatalf("应注入【本局结束】标记触发教练总结:\n%s", spoken)
+	}
+}
+
+// 途中局终（掉坑，未到 Boss 战）同样写记忆与教练标记。
+func TestRunEndedWithoutBossWritesMemory(t *testing.T) {
+	srv, got := fakeMemoryAPI(t)
+	h, vl := newBossHub(t)
+	h.mem = &MemoryClient{BaseURL: srv.URL, APIKey: "k", MemoryID: "mem", MAC: "aa:bb"}
+	conn := dialHub(t, h)
+
+	sendWS(t, conn, map[string]any{"type": "run-ended", "dist": 128, "deaths": 3, "coins": 7})
+	select {
+	case body := <-got:
+		if !strings.Contains(body, "128 米") || !strings.Contains(body, "未到 Boss 战") {
+			t.Fatalf("途中局终摘要不符: %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("途中局终未写记忆片段")
+	}
+	if spoken := strings.Join(vl.spoken, "\n"); !strings.Contains(spoken, "llm:【本局结束】") {
+		t.Fatalf("途中局终也应触发教练标记:\n%s", spoken)
 	}
 }
