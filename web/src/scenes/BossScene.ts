@@ -55,7 +55,7 @@ export class BossScene extends Phaser.Scene {
     // 圆角面板底板先建垫底，文字按原布局叠上：密数+情报 / 报数记录 / 中央提示+输入
     neonPanel(this, 12, 92, 330, 56)
     neonPanel(this, 12, 156, 560, 200)
-    neonPanel(this, W / 2 - 190, 366, 380, 80)
+    neonPanel(this, W / 2 - 200, 358, 400, 96)
     this.add
       .text(W / 2, 44, '⚔ 挑战者 · 猜数字对决', {
         ...FONT,
@@ -76,11 +76,18 @@ export class BossScene extends Phaser.Scene {
     this.revealText = this.add.text(24, 124, '亮位情报：暂无', { ...FONT, color: '#38b764', fontSize: '16px' })
     this.rowsText = this.add.text(24, 152, '', { ...FONT, color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
     this.hintText = this.add
-      .text(W / 2, 384, this.ui.hint, { ...FONT, color: '#ffe6a7', fontSize: '20px' })
-      .setOrigin(0.5)
+      .text(W / 2, 368, this.ui.hint, {
+        ...FONT,
+        color: '#ffe6a7',
+        fontSize: '20px',
+        // 提示文案长短不一，按面板内宽自动换行（CJK 按字断行），顶对齐固定起点
+        wordWrap: { width: 380 },
+        lineSpacing: 4,
+      })
+      .setOrigin(0.5, 0)
     this.bufferText = this.add
-      .text(W / 2, 418, '－ － －', { ...FONT, color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
-      .setOrigin(0.5)
+      .text(W / 2, 422, '－ － －', { ...FONT, color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
+      .setOrigin(0.5, 0)
 
     this.banner = this.add
       .text(W / 2, H / 2 - 40, '', { ...FONT, color: '#ffd23f', fontSize: '42px', fontStyle: 'bold' })
@@ -170,7 +177,7 @@ export class BossScene extends Phaser.Scene {
     onClick: () => void,
     color = '#ffffff',
   ) {
-    const w = Math.max(56, label.length * 17 + 26)
+    const w = Math.max(56, label.length * 17 + 14)
     const c = this.add.container(x, y)
     c.add(neonPanel(this, -w / 2, -16, w, 32))
     c.add(
