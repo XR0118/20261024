@@ -1,6 +1,8 @@
 import Phaser from 'phaser'
+import { mic } from '../audio/mic'
 import { reportGameState, sendBossAction } from '../audio/voice'
 import { applyBossEvents, initialBossUi, type BossEvent, type BossUiState } from '../game/bossui'
+import { BLOCK_WINDOW_MS, blockedByShout } from '../game/qte'
 import { reportRun } from '../player'
 
 const W = 960
@@ -15,6 +17,8 @@ export class BossScene extends Phaser.Scene {
   private run = { coins: 0, dist: 0, deaths: 0 }
   private reported = false
   private lastReport = 0
+  private qteStartedAt = -1
+  private qteSamples: number[] = []
 
   private hintText!: Phaser.GameObjects.Text
   private mySecretText!: Phaser.GameObjects.Text
@@ -34,6 +38,8 @@ export class BossScene extends Phaser.Scene {
     this.ui = initialBossUi()
     this.buffer = ''
     this.reported = false
+    this.qteStartedAt = -1
+    this.qteSamples = []
     this.run = { coins: data.coins ?? 0, dist: data.dist ?? 0, deaths: data.deaths ?? 0 }
   }
 
@@ -83,6 +89,7 @@ export class BossScene extends Phaser.Scene {
 
   update(time: number) {
     if (this.ui.stage === 'ended') return
+    this.updateQTE(time)
     if (time - this.lastReport > 500) {
       this.lastReport = time
       reportGameState({
@@ -93,6 +100,22 @@ export class BossScene extends Phaser.Scene {
         won: false,
       })
     }
+  }
+
+  // 攻击-格挡 QTE：窗口内逐帧采样本地响度（无麦克风时恒为 0，只能靠点击兜底），
+  // 窗口结束按是否喊中上报；判定纯函数在 game/qte.ts
+  private updateQTE(time: number) {
+    if (this.ui.stage !== 'attack' || this.qteStartedAt < 0) return
+    this.qteSamples.push(mic.level())
+    const remain = BLOCK_WINDOW_MS - (time - this.qteStartedAt)
+    if (remain > 0) {
+      this.hintText.setText(`喊——！！ ${(remain / 1000).toFixed(1)}s`)
+      return
+    }
+    const blocked = blockedByShout(this.qteSamples)
+    this.qteStartedAt = -1
+    this.qteSamples = []
+    sendBossAction('block', { blocked })
   }
 
   private buildKeypad() {
@@ -161,6 +184,10 @@ export class BossScene extends Phaser.Scene {
   private onEvents = (ev: Event) => {
     const evs = (ev as CustomEvent).detail as BossEvent[]
     this.ui = applyBossEvents(this.ui, evs)
+    if (evs.some((e) => e.kind === 'attack')) {
+      this.qteStartedAt = this.time.now
+      this.qteSamples = []
+    }
     this.redraw()
     if (this.ui.stage === 'ended') this.finishBattle()
   }

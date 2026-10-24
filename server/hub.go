@@ -58,15 +58,17 @@ type GameHub struct {
 	linx  voiceLink
 	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
 
-	bossMu sync.Mutex
-	battle *boss.Battle
-	newRng func() *rand.Rand // Boss 战随机源；测试注入固定 seed
+	bossMu       sync.Mutex
+	battle       *boss.Battle
+	newRng       func() *rand.Rand // Boss 战随机源；测试注入固定 seed
+	blockTimeout time.Duration     // 攻击等格挡结果的兜底超时；测试注入短值
 }
 
 func NewGameHub(brain *Brain) *GameHub {
 	return &GameHub{
-		brain:  brain,
-		newRng: func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
+		brain:        brain,
+		newRng:       func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
+		blockTimeout: 3 * time.Second,
 	}
 }
 
@@ -314,6 +316,25 @@ func (h *GameHub) applyInput(in boss.Input) {
 		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
 	}
 	h.settleBoss(evs, err)
+	for _, e := range evs {
+		if e.Kind == boss.KindAttack {
+			h.armBlockTimeout()
+		}
+	}
+}
+
+// armBlockTimeout 攻击兜底：窗口内无格挡结果上报（页面僵死/断连）按失败判负。
+func (h *GameHub) armBlockTimeout() {
+	b := h.battle
+	time.AfterFunc(h.blockTimeout, func() {
+		h.bossMu.Lock()
+		defer h.bossMu.Unlock()
+		if h.battle != b || b.Phase() != boss.PhaseAttack {
+			return // 已上报/弃局/新对局，超时作废
+		}
+		evs, err := b.ReportBlock(false)
+		h.settleBoss(evs, err)
+	})
 }
 
 // settleBoss 收局并推送：battle-ended 时先回 idle 再推（读端收到

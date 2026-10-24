@@ -37,6 +37,7 @@ func newBossHub(t *testing.T) (*GameHub, *fakeVoiceLink) {
 	vl := &fakeVoiceLink{}
 	h.linx = vl
 	h.newRng = func() *rand.Rand { return rand.New(rand.NewSource(7)) }
+	h.blockTimeout = 60 * time.Millisecond
 	return h, vl
 }
 
@@ -264,6 +265,35 @@ func TestReconnectAbandonsBattle(t *testing.T) {
 	sendWS(t, conn2, map[string]any{"type": "boss-enter", "coins": 50})
 	if evs := readBossEvents(t, conn2); len(evs) != 1 || evs[0].Kind != "awaiting-secret" {
 		t.Fatalf("重连后应能开新战斗，got %+v", evs)
+	}
+}
+
+// 攻击窗口超时兜底：不上报格挡结果（页面僵死/断连）按失败判负。
+func TestBlockTimeoutLosesBattle(t *testing.T) {
+	h, _ := newBossHub(t) // blockTimeout=60ms
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	sawAttack := false
+	for round := 0; round < 20 && !sawAttack; round++ {
+		h.handleSTT("报数 九八七")
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack = true
+			}
+		}
+	}
+	if !sawAttack {
+		t.Fatal("未进入攻击")
+	}
+	// 不发 block——等超时自动判负
+	evs := readBossEvents(t, conn)
+	last := evs[len(evs)-1]
+	if last.Kind != "battle-ended" || last.Outcome != boss.OutcomeLose {
+		t.Fatalf("超时未按失败判负，got %+v", evs)
+	}
+	if p := h.currentPhase(); p != "idle" {
+		t.Fatalf("超时判负后应回 idle，got %s", p)
 	}
 }
 
