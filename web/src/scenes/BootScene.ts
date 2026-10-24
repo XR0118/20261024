@@ -152,8 +152,10 @@ export class BootScene extends Phaser.Scene {
     this.meText.setText(`${getPlayer().name}（点击改名）`)
   }
 
-  // 灵敏度面板：不同麦克风/嗓门差异大，玩家自己校准（实时预览条）
+  // 灵敏度面板：不同麦克风/嗓门差异大，玩家自己校准（实时预览条）。
+  // Scene 实例跨 restart 复用，上次会话的按钮引用已销毁，必须先清空。
   private buildSensPanel() {
+    this.sensBtns = []
     const p = this.add.container(W / 2, H / 2).setVisible(false).setDepth(10)
     p.add(this.add.rectangle(0, 0, 480, 250, 0x0f0e1a, 0.95).setStrokeStyle(2, 0x7a6ff0))
     p.add(
