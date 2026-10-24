@@ -57,5 +57,15 @@ export function makeLevel(seed: number): Level {
   }
   ground.push([x + 200, 800, 480])
   coinArc(x + 500, 420, 5)
-  return { ground, platforms, coins, hazards, worldWidth: x + 1000 }
+  // 币与杆互斥：币弧和杆都挂在跳跃弧线上，天然会撞在一起——
+  // 视觉重叠会让"吃币路线"看起来撞杆，撒完统一剔除杆缓冲区内的币
+  const PAD = 40
+  const filtered = coins.filter(
+    ([cx, cy]) =>
+      !hazards.some(
+        ([hx, hy, hw, hh]) =>
+          cx > hx - PAD && cx < hx + hw + PAD && cy > hy - PAD && cy < hy + hh + PAD,
+      ),
+  )
+  return { ground, platforms, coins: filtered, hazards, worldWidth: x + 1000 }
 }

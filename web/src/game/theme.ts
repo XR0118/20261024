@@ -93,7 +93,7 @@ export function paintNightSky(
       const s = scene.add
         .circle(
           rand() * (viewW + (span - viewW) * sf),
-          rand() * (viewH - 180),
+          rand() * viewH,
           rad * (0.6 + rand() * 0.8),
           rand() > 0.8 ? NEON.starWarm : NEON.star,
         )
