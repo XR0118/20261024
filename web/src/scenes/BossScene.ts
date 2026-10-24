@@ -4,6 +4,9 @@ import { reportGameState, sendBossAction } from '../audio/voice'
 import { applyBossEvents, initialBossUi, type BossEvent, type BossUiState } from '../game/bossui'
 import { BLOCK_WINDOW_MS, blockedByShout } from '../game/qte'
 import { reportRun } from '../player'
+import { FONT, NEON, ensureSparkTexture, neonPanel } from '../game/theme'
+import { buildBossAvatar, type BossAvatar } from '../game/bossavatar'
+import { buildSkin, urlSkin } from '../game/skin'
 
 const W = 960
 const H = 540
@@ -26,27 +29,37 @@ export class BossScene extends Phaser.Scene {
   private revealText!: Phaser.GameObjects.Text
   private bufferText!: Phaser.GameObjects.Text
   private banner!: Phaser.GameObjects.Text
-  private blockOkBtn!: Phaser.GameObjects.Text
-  private blockFailBtn!: Phaser.GameObjects.Text
-  private declineSwapBtn!: Phaser.GameObjects.Text
+  private blockOkBtn!: Phaser.GameObjects.Container
+  private blockFailBtn!: Phaser.GameObjects.Container
+  private declineSwapBtn!: Phaser.GameObjects.Container
+  private boss!: BossAvatar
+  private playerAvatar!: Phaser.GameObjects.Container
+  private skin = ''
 
   constructor() {
     super('boss')
   }
 
-  init(data: { coins?: number; dist?: number; deaths?: number }) {
+  init(data: { coins?: number; dist?: number; deaths?: number; skin?: string }) {
     this.ui = initialBossUi()
     this.buffer = ''
     this.reported = false
     this.qteStartedAt = -1
     this.qteSamples = []
+    this.skin = data.skin ?? ''
     this.run = { coins: data.coins ?? 0, dist: data.dist ?? 0, deaths: data.deaths ?? 0 }
   }
 
   create() {
     this.cameras.main.setBackgroundColor('#12101e')
+    // 圆角面板底板先建垫底，文字按原布局叠上：密数+情报 / 报数记录 / 中央提示+输入
+    // 左侧两框等宽对齐（330 取密数/亮位信息的最长行），避免一长一短
+    neonPanel(this, 12, 92, 330, 56)
+    neonPanel(this, 12, 156, 330, 200)
+    neonPanel(this, W / 2 - 200, 358, 400, 96)
     this.add
       .text(W / 2, 44, '⚔ 挑战者 · 猜数字对决', {
+        ...FONT,
         color: '#ef476f',
         fontSize: '30px',
         fontStyle: 'bold',
@@ -54,28 +67,41 @@ export class BossScene extends Phaser.Scene {
       .setOrigin(0.5)
     this.add
       .text(W / 2, 76, '报三个不重复数字 · 数字与位置都对才算命中', {
+        ...FONT,
         color: '#7a6ff0',
         fontSize: '15px',
       })
       .setOrigin(0.5)
 
-    this.mySecretText = this.add.text(24, 100, '我的密数：待上报', { color: '#ffd23f', fontSize: '16px' })
-    this.revealText = this.add.text(24, 124, '亮位情报：暂无', { color: '#38b764', fontSize: '16px' })
-    this.rowsText = this.add.text(24, 152, '', { color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
+    this.mySecretText = this.add.text(24, 100, '我的密数：待上报', { ...FONT, color: '#ffd23f', fontSize: '16px' })
+    this.revealText = this.add.text(24, 124, '亮位情报：暂无', { ...FONT, color: '#38b764', fontSize: '16px' })
+    this.rowsText = this.add.text(24, 152, '', { ...FONT, color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
     this.hintText = this.add
-      .text(W / 2, 384, this.ui.hint, { color: '#ffe6a7', fontSize: '20px' })
-      .setOrigin(0.5)
+      .text(W / 2, 368, this.ui.hint, {
+        ...FONT,
+        color: '#ffe6a7',
+        fontSize: '20px',
+        // 提示文案长短不一，按面板内宽自动换行（CJK 按字断行），顶对齐固定起点
+        wordWrap: { width: 380 },
+        lineSpacing: 4,
+      })
+      .setOrigin(0.5, 0)
     this.bufferText = this.add
-      .text(W / 2, 418, '－ － －', { color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
-      .setOrigin(0.5)
+      .text(W / 2, 422, '－ － －', { ...FONT, color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
+      .setOrigin(0.5, 0)
 
     this.banner = this.add
-      .text(W / 2, H / 2 - 40, '', { color: '#ffd23f', fontSize: '42px', fontStyle: 'bold' })
+      .text(W / 2, H / 2 - 40, '', { ...FONT, color: '#ffd23f', fontSize: '42px', fontStyle: 'bold' })
       .setOrigin(0.5)
       .setDepth(5)
 
     this.buildKeypad()
     this.buildStageButtons()
+    ensureSparkTexture(this)
+    this.boss = buildBossAvatar(this, 640, 220)
+    // 玩家分身：带上跑酷同款造型与 Boss 对峙，受击/格挡特效挂在它身上
+    this.playerAvatar = buildSkin(this, urlSkin() ?? (this.skin === 'wave' ? 'wave' : 'bean'))
+    this.playerAvatar.setPosition(150, 430).setScale(0.9)
 
     window.addEventListener('boss-events', this.onEvents)
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -118,12 +144,17 @@ export class BossScene extends Phaser.Scene {
     sendBossAction('block', { blocked })
   }
 
+  // 数字键盘是纯键盘外的调试兜底通道，不面板化（面板会与紧凑行距重叠）
   private buildKeypad() {
     const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'OK']
     keys.forEach((k, i) => {
       const x = W / 2 - 132 + (i % 3) * 132
       const y = 468 + Math.floor(i / 3) * 22
-      this.addButton(k, x, y, () => this.onKey(k === '⌫' ? 'Backspace' : k === 'OK' ? 'Enter' : k))
+      this.add
+        .text(x, y, k, { ...FONT, color: '#9aa1bd', fontSize: '17px' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.onKey(k === '⌫' ? 'Backspace' : k === 'OK' ? 'Enter' : k))
     })
   }
 
@@ -139,6 +170,7 @@ export class BossScene extends Phaser.Scene {
     this.addButton('投降', W - 90, 60, () => sendBossAction('surrender'), '#566079')
   }
 
+  // 按钮统一为圆角底板+文字的容器：阶段按钮整组 show/hide，底板跟随
   private addButton(
     label: string,
     x: number,
@@ -146,11 +178,17 @@ export class BossScene extends Phaser.Scene {
     onClick: () => void,
     color = '#ffffff',
   ) {
-    return this.add
-      .text(x, y, label, { color, fontSize: '17px', fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerdown', onClick)
+    const w = Math.max(56, label.length * 17 + 14)
+    const c = this.add.container(x, y)
+    c.add(neonPanel(this, -w / 2, -16, w, 32))
+    c.add(
+      this.add
+        .text(0, 0, label, { ...FONT, color, fontSize: '17px', fontStyle: 'bold' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', onClick),
+    )
+    return c
   }
 
   private onKey(key: string) {
@@ -187,9 +225,93 @@ export class BossScene extends Phaser.Scene {
     if (evs.some((e) => e.kind === 'attack')) {
       this.qteStartedAt = this.time.now
       this.qteSamples = []
+      this.bossAttackFX()
     }
+    if (evs.some((e) => e.kind === 'reveal')) this.shieldFX()
     this.redraw()
     if (this.ui.stage === 'ended') this.finishBattle()
+  }
+
+  // Boss 攻击起手：前倾蓄力+张嘴，三重音波环压向玩家（时长对齐 QTE 窗口）
+  private bossAttackFX() {
+    this.tweens.add({
+      targets: this.boss.root,
+      scale: 1.15,
+      x: this.boss.root.x - 30,
+      duration: 260,
+      yoyo: true,
+      ease: 'Quad.Out',
+    })
+    this.tweens.add({ targets: this.boss.mouth, scaleY: 2.2, duration: 200, yoyo: true })
+    for (let i = 0; i < 3; i++) {
+      const ring = this.add
+        .circle(this.boss.root.x - 50, this.boss.root.y + 14, 10 + i * 6)
+        .setStrokeStyle(3, NEON.hazardEdge)
+      this.tweens.add({
+        targets: ring,
+        x: this.playerAvatar.x,
+        y: this.playerAvatar.y,
+        scale: 2.2,
+        alpha: 0.1,
+        duration: 900,
+        delay: i * 140,
+        ease: 'Quad.In',
+        onComplete: () => ring.destroy(),
+      })
+    }
+  }
+
+  // 格挡成功：玩家周身青色护盾波纹荡开
+  private shieldFX() {
+    const shield = this.add
+      .circle(this.playerAvatar.x, this.playerAvatar.y, 46)
+      .setStrokeStyle(4, NEON.groundEdge)
+    this.tweens.add({
+      targets: shield,
+      scale: 1.5,
+      alpha: 0,
+      duration: 500,
+      onComplete: () => shield.destroy(),
+    })
+  }
+
+  // 格挡失败被命中：屏幕震动 + 玩家红闪后仰
+  private hitFX() {
+    this.cameras.main.shake(300, 0.012)
+    const flash = this.add
+      .rectangle(this.playerAvatar.x, this.playerAvatar.y, 90, 110, 0xef476f, 0.45)
+      .setDepth(6)
+    this.tweens.add({ targets: flash, alpha: 0, duration: 400, onComplete: () => flash.destroy() })
+    this.tweens.add({
+      targets: this.playerAvatar,
+      x: this.playerAvatar.x - 16,
+      duration: 60,
+      yoyo: true,
+      repeat: 3,
+    })
+  }
+
+  // 终结 Boss：闪白倒下 + 金币色火花四溅
+  private winFX() {
+    this.boss.body.setFillStyle(0xffffff, 1)
+    this.time.delayedCall(150, () => this.boss.body.setFillStyle(0x241d3f, 1))
+    this.tweens.add({
+      targets: this.boss.root,
+      angle: 90,
+      y: this.boss.root.y + 36,
+      alpha: 0.45,
+      duration: 700,
+      ease: 'Bounce.Out',
+    })
+    const p = this.add.particles(this.boss.root.x, this.boss.root.y, 'spark', {
+      speed: { min: 80, max: 240 },
+      scale: { start: 1.2, end: 0 },
+      lifespan: 600,
+      tint: 0xffd23f,
+      emitting: false,
+    })
+    p.explode(24)
+    this.time.delayedCall(800, () => p.destroy())
   }
 
   private redraw() {
@@ -223,7 +345,20 @@ export class BossScene extends Phaser.Scene {
     if (this.reported || !this.ui.ended) return
     this.reported = true
     const { finalCoins, outcome } = this.ui.ended
-    this.banner.setText(outcome === 'win' ? '胜！金币翻倍' : '负·原额结算')
+    const win = outcome === 'win'
+    if (win) this.winFX()
+    if (outcome === 'lose') this.hitFX()
+    const panel = neonPanel(this, W / 2 - 230, H / 2 - 72, 460, 144, win ? 0x38b764 : 0xef476f)
+      .setDepth(4)
+      .setScale(0.7)
+    this.banner.setText(win ? '胜！金币翻倍' : '负·原额结算')
+    this.banner.setDepth(5).setScale(0.7)
+    const sub = this.add
+      .text(W / 2, H / 2 + 8, `最终 ${finalCoins} 金币`, { ...FONT, color: '#ffe6a7', fontSize: '22px' })
+      .setOrigin(0.5)
+      .setDepth(5)
+      .setScale(0.7)
+    this.tweens.add({ targets: [panel, this.banner, sub], scale: 1, duration: 220, ease: 'Back.Out' })
     void reportRun(this.run.dist, finalCoins)
     this.time.delayedCall(3200, () => this.scene.start('boot'))
   }
