@@ -12,16 +12,23 @@ export function voiceListening(): boolean {
   return !!ws && ws.readyState === WebSocket.OPEN
 }
 
-export async function startVoice(): Promise<void> {
-  const stream = mic.getStream()
-  if (!stream) return
-
+// startVoice 立即建 WS（下行与 Boss 战动作通道不等麦克风——授权弹窗
+// 挂起或被拒时键盘照样可玩）；上行编码由 attachMicUplink 就绪后挂上。
+export function startVoice(): void {
+  if (ws) return
   ws = new WebSocket(UPSTREAM)
   ws.binaryType = 'arraybuffer'
   ws.onmessage = onMessage
+}
 
+export async function attachMicUplink(): Promise<void> {
+  const stream = mic.getStream()
+  if (!stream || uplinkStarted) return
+  uplinkStarted = true
   await encoderLoop(stream)
 }
+
+let uplinkStarted = false
 
 let ttsRemotePlaying = false // 平台侧 TTS 进行中（tts-state 事件）
 let sawTTS = false // 本次对话平台确实下发过播报（区分"没开始"与"已结束"）
@@ -33,11 +40,15 @@ function onMessage(ev: MessageEvent) {
       actions?: Action[]
       listening?: boolean
       playing?: boolean
+      events?: unknown[]
     }
     if (msg.type === 'game-action' && msg.actions) {
       for (const a of msg.actions) {
         window.dispatchEvent(new CustomEvent('game-action', { detail: a }))
       }
+    }
+    if (msg.type === 'boss-events' && msg.events) {
+      window.dispatchEvent(new CustomEvent('boss-events', { detail: msg.events }))
     }
     if (msg.type === 'voice-state') {
       window.dispatchEvent(new CustomEvent('voice-state', { detail: { listening: msg.listening } }))
@@ -189,4 +200,19 @@ export function reportGameState(state: unknown) {
   if (payload === lastState) return // 游戏每帧都报，粗去重降低上行噪音
   lastState = payload
   ws.send(payload)
+}
+
+// Boss 战动作上行：进场（携本局金币原额）与显式动作（键盘/点击调试通道，
+// 与语音通道在服务端汇入同一引擎）
+export function sendBossEnter(coins: number) {
+  sendJSON({ type: 'boss-enter', coins })
+}
+
+export function sendBossAction(action: string, extra: Record<string, unknown> = {}) {
+  sendJSON({ type: 'boss-action', action, ...extra })
+}
+
+function sendJSON(payload: Record<string, unknown>) {
+  if (ws?.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify(payload))
 }

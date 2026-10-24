@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
-import { reportGameState, voiceListening } from '../audio/voice'
+import { reportGameState, sendBossEnter, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
 import { getPlayer } from '../player'
 
@@ -201,8 +201,17 @@ export class PlayScene extends Phaser.Scene {
       return
     }
     if (this.player.x > this.level.worldWidth - 80) {
-      this.endRun(`通关！摔死 ${this.deaths} 次 · 💰 ${this.coins}`, true)
+      this.enterBoss(dist)
     }
+  }
+
+  // 冲线=进入 Boss 战（「通关」概念消灭）：结算挪到战斗结束按结果一次性上报
+  private enterBoss(dist: number) {
+    if (this.finished) return
+    this.finished = true
+    reportGameState({ playing: false, phase: 'boss', dist, deaths: this.deaths, won: false })
+    sendBossEnter(this.coins)
+    this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
   }
 
   // 局终统一出口：结算上报（金币入账）、展示结果、回首页

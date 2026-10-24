@@ -363,15 +363,14 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	h.mu.Lock()
-	replaced := h.bconn != nil
-	if replaced {
+	if h.bconn != nil {
 		h.bconn.Close(websocket.StatusPolicyViolation, "replaced")
 	}
 	h.bconn = conn
 	h.mu.Unlock()
-	if replaced {
-		h.abandonBoss()
-	}
+	// 页面连接（无论顶掉旧连接还是旧连接已自行断开）一律开启新对局状态：
+	// 刷新后残留的战斗会霸占 boss 相位与语音输入路由
+	h.abandonBoss()
 	defer func() {
 		h.mu.Lock()
 		if h.bconn == conn {

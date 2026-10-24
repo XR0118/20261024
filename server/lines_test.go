@@ -58,8 +58,8 @@ func TestChallengerLineCarriesGameFacts(t *testing.T) {
 	}
 	pline0, _, _ := challengerLine(boss.Event{Kind: boss.KindGuessResult, Turn: boss.TurnPlayer, Hits: 0})
 	pline2, _, _ := challengerLine(boss.Event{Kind: boss.KindGuessResult, Turn: boss.TurnPlayer, Hits: 2})
-	if !strings.Contains(pline0, "零") {
-		t.Fatalf("零命中台词须含「零」，got %q", pline0)
+	if !strings.Contains(pline0, "零位") && !strings.Contains(pline0, "一个都没中") {
+		t.Fatalf("零命中台词须表达零命中（三句随机变体之一），got %q", pline0)
 	}
 	if !strings.Contains(pline2, "两") {
 		t.Fatalf("两命中台词须含「两」，got %q", pline2)
