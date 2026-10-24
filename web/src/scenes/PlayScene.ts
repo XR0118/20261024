@@ -214,10 +214,13 @@ export class PlayScene extends Phaser.Scene {
     this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
   }
 
-  // 局终统一出口：结算上报（金币入账）、记忆片段通知、展示结果、回首页
+  // 局终统一出口：结算上报（金币入账）、记忆片段通知、展示结果、回首页。
+  // 掉坑/撞杆本身就是一次摔死——必须先记入，否则记忆摘要写「摔死 0 次」
+  // 与教练复盘口径全错（实机测试踩过）。
   private endRun(message: string, won = false) {
     if (this.finished) return
     this.finished = true
+    this.deaths++
     const dist = Math.floor((this.player.x - 80) / 50)
     reportGameState({ playing: false, dist, deaths: this.deaths, won })
     sendRunEnded(dist, this.deaths, this.coins, getPlayer().name)
