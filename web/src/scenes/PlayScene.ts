@@ -4,7 +4,7 @@ import { reportGameState, sendBossEnter, sendRunEnded, voiceListening } from '..
 import { makeLevel, type Level } from '../game/level'
 import { getPlayer, reportRun } from '../player'
 import { applyRunAnimation, buildSkin, urlSkin, SKIN_BODY_H, SKIN_BODY_W } from '../game/skin'
-import { NEON, paintNightSky } from '../game/theme'
+import { NEON, FONT, ensureCoinTexture, ensureSparkTexture, neonPanel, paintNightSky } from '../game/theme'
 
 const W = 960
 const H = 540
@@ -86,27 +86,56 @@ export class PlayScene extends Phaser.Scene {
     finishGlow.fillStyle(NEON.topLight, 0.9)
     finishGlow.fillRect(fx - 2, 290, 4, 190)
     this.add
-      .text(fx, 270, 'FINISH', { color: '#3ef0c8', fontSize: '20px', fontStyle: 'bold' })
+      .text(fx, 270, 'FINISH', { ...FONT, color: '#3ef0c8', fontSize: '20px', fontStyle: 'bold' })
       .setOrigin(0.5)
 
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1)
 
     this.jumpKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
+    ensureSparkTexture(this)
+    ensureCoinTexture(this)
     this.buildHud()
   }
 
   private spawnCoins() {
     this.coinGroup = this.physics.add.staticGroup()
     for (const [x, y] of this.level.coins) {
-      const c = this.add.circle(x, y, 11, 0xffd23f)
-      c.setStrokeStyle(2, 0xb8860b)
-      this.coinGroup.add(c)
+      // 币 = 程序生成纹理的 Image：物理体天然居中，拾取销毁单对象即可
+      const coin = this.add.image(x, y, 'coin')
+      // 伪 3D 翻转：横向压缩循环（高光烘焙在纹理里随转）
+      this.tweens.add({
+        targets: coin,
+        scaleX: 0.15,
+        duration: 480,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.InOut',
+      })
+      this.coinGroup.add(coin)
     }
     this.physics.add.overlap(this.player, this.coinGroup, (_, obj) => {
-      obj.destroy()
+      const coin = obj as Phaser.GameObjects.Image
+      this.coinBurst(coin.x, coin.y)
+      coin.destroy()
       this.coins++
       this.coinText.setText(`💰 ${this.coins}`)
     })
+  }
+
+  // 拾取反馈：金色火花向上迸发后即焚（粒子发射器自毁，不留场景负担）
+  private coinBurst(x: number, y: number) {
+    const p = this.add.particles(x, y, 'spark', {
+      speed: { min: 60, max: 170 },
+      angle: { min: 200, max: 340 },
+      gravityY: 500,
+      scale: { start: 1.1, end: 0 },
+      alpha: { start: 1, end: 0.2 },
+      lifespan: 450,
+      tint: 0xffd23f,
+      emitting: false,
+    })
+    p.explode(10)
+    this.time.delayedCall(600, () => p.destroy())
   }
 
   // 空中横杆：触碰即局终（红色警示）
@@ -160,6 +189,14 @@ export class PlayScene extends Phaser.Scene {
 
   private buildHud() {
     const pad = 16
+    // 左上：距离信息卡
+    neonPanel(this, pad - 8, pad - 8, 132, 42).setScrollFactor(0)
+    this.hudText = this.add
+      .text(pad, pad, '', { ...FONT, color: '#ffffff', fontSize: '17px' })
+      .setScrollFactor(0)
+    // 右上：声音/体力/金币一体的状态卡
+    const px = W - pad - 176
+    neonPanel(this, px - 8, pad - 8, 184, 70).setScrollFactor(0)
     this.add
       .rectangle(W - pad - 160, pad + 10, 160, 12, 0x000000)
       .setOrigin(1, 0.5)
@@ -168,9 +205,6 @@ export class PlayScene extends Phaser.Scene {
     this.micFill = this.add
       .rectangle(W - pad - 160, pad + 10, 1, 12, 0x38b764)
       .setOrigin(0, 0.5)
-      .setScrollFactor(0)
-    this.hudText = this.add
-      .text(pad, pad, '', { color: '#ffffff', fontSize: '16px' })
       .setScrollFactor(0)
     // 体力条（麦克风波形下方）：满黄，低量转红
     this.add
@@ -183,7 +217,7 @@ export class PlayScene extends Phaser.Scene {
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
     this.coinText = this.add
-      .text(W - pad, pad + 26, '💰 0', { color: '#ffd23f', fontSize: '18px' })
+      .text(W - pad, pad + 40, '💰 0', { ...FONT, color: '#ffd23f', fontSize: '18px' })
       .setOrigin(1, 0)
       .setScrollFactor(0)
   }
@@ -272,7 +306,28 @@ export class PlayScene extends Phaser.Scene {
     reportGameState({ playing: false, dist, deaths: this.deaths, won: false })
     sendRunEnded(dist, this.coins, getPlayer().name, cause)
     this.reportRun(dist)
-    this.hudText.setText(message)
+    // 结算横幅：居中圆角面板弹入，代替塞在角落 HUD 里的一行字
+    const cam = this.cameras.main
+    const bx = cam.scrollX + W / 2
+    const by = cam.scrollY + H / 2
+    const panel = neonPanel(this, bx - 210, by - 46, 420, 92, 0xef476f).setDepth(50)
+    const title = this.add
+      .text(bx, by - 24, '本局结束', { ...FONT, color: '#ef476f', fontSize: '20px' })
+      .setOrigin(0.5)
+      .setDepth(51)
+    const detail = this.add
+      .text(bx, by + 14, message, { ...FONT, color: '#ffe6a7', fontSize: '24px' })
+      .setOrigin(0.5)
+      .setDepth(51)
+    panel.setScale(0.7)
+    title.setScale(0.7)
+    detail.setScale(0.7)
+    this.tweens.add({
+      targets: [panel, title, detail],
+      scale: 1,
+      duration: 220,
+      ease: 'Back.Out',
+    })
     this.time.delayedCall(2000, () => this.scene.start('boot'))
   }
 

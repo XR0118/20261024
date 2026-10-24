@@ -9,7 +9,7 @@ import {
 } from '../audio/voice'
 import { fetchWallet, getPlayer, setPlayerName } from '../player'
 import { buildSkin, SKIN_PRICE, SkinId, startIdleBreathing } from '../game/skin'
-import { paintNightSky } from '../game/theme'
+import { FONT, NEON, paintNightSky } from '../game/theme'
 
 const W = 960
 const H = 540
@@ -65,16 +65,17 @@ export class BootScene extends Phaser.Scene {
     paintNightSky(this, 20261024, W, H)
 
     this.add
-      .text(W / 2, 70, '闻声起跳 · LoudLeap', { color: '#ffe6a7', fontSize: '44px', fontStyle: 'bold' })
+      .text(W / 2, 70, '闻声起跳 · LoudLeap', { ...FONT, color: '#ffe6a7', fontSize: '44px', fontStyle: 'bold' })
       .setOrigin(0.5)
     this.add
-      .text(W / 2, 118, '喊得越响，跳得越高', { color: '#7a6ff0', fontSize: '18px' })
+      .text(W / 2, 118, '喊得越响，跳得越高', { ...FONT, color: '#7a6ff0', fontSize: '18px' })
       .setOrigin(0.5)
 
     this.add
-      .text(W / 2, 168, '🏅 排行榜（最远距离）', { color: '#ffffff', fontSize: '20px' })
+      .text(W / 2, 168, '🏅 排行榜（最远距离）', { ...FONT, color: '#ffffff', fontSize: '20px' })
       .setOrigin(0.5)
     this.boardText = this.add.text(0, 0, '加载中…', {
+      ...FONT,
       color: '#cfd2e8',
       fontSize: '18px',
       lineSpacing: 8,
@@ -82,22 +83,23 @@ export class BootScene extends Phaser.Scene {
 
     this.hintText = this.add
       .text(W / 2, 448, '喊「你好小智」唤醒，再说「开始游戏」', {
+        ...FONT,
         color: '#ffe6a7',
         fontSize: '20px',
       })
       .setOrigin(0.5)
     this.add
-      .text(W / 2, 478, '调试：按空格直接开始', { color: '#566079', fontSize: '15px' })
+      .text(W / 2, 478, '调试：按空格直接开始', { ...FONT, color: '#566079', fontSize: '15px' })
       .setOrigin(0.5)
     this.add
-      .text(W / 2, 502, '⚔ 调试：直接挑战 Boss', { color: '#566079', fontSize: '15px' })
+      .text(W / 2, 502, '⚔ 调试：直接挑战 Boss', { ...FONT, color: '#566079', fontSize: '15px' })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true })
       .on('pointerdown', () => this.startBossDebug())
 
     const me = getPlayer()
     this.meText = this.add
-      .text(W - 20, H - 34, '', { color: '#9aa1bd', fontSize: '16px' })
+      .text(W - 20, H - 34, '', { ...FONT, color: '#9aa1bd', fontSize: '16px' })
       .setOrigin(1, 0)
       .setInteractive({ useHandCursor: true })
       .on('pointerdown', () => {
@@ -109,7 +111,7 @@ export class BootScene extends Phaser.Scene {
       })
 
     this.balanceText = this.add
-      .text(W - 20, 30, '余额 …', { color: '#ffd23f', fontSize: '18px' })
+      .text(W - 20, 30, '余额 …', { ...FONT, color: '#ffd23f', fontSize: '18px' })
       .setOrigin(1, 0)
     this.buildSkinCards()
     void this.refreshWallet()
@@ -118,7 +120,7 @@ export class BootScene extends Phaser.Scene {
     void this.refreshBoard()
 
     this.add
-      .text(20, H - 34, '⚙ 灵敏度', { color: '#9aa1bd', fontSize: '16px' })
+      .text(20, H - 34, '⚙ 灵敏度', { ...FONT, color: '#9aa1bd', fontSize: '16px' })
       .setInteractive({ useHandCursor: true })
       .on('pointerdown', () => this.sensPanel.setVisible(!this.sensPanel.visible))
     this.buildSensPanel()
@@ -186,15 +188,17 @@ export class BootScene extends Phaser.Scene {
       { id: 'wave', cx: 820, cy: 405 },
     ]
     for (const spot of spots) {
-      const bg = this.add.rectangle(spot.cx, spot.cy, 190, 170, 0x171826).setStrokeStyle(2, 0x3a3d5c)
+      const bg = this.add
+        .rectangle(spot.cx, spot.cy, 190, 170, NEON.panelFill)
+        .setStrokeStyle(2, NEON.panelEdge)
       const preview = buildSkin(this, spot.id)
       preview.setScale(0.85)
       preview.setPosition(spot.cx, spot.cy - 35)
       startIdleBreathing(this, preview)
       this.add
-        .text(spot.cx, spot.cy + 15, spot.id === 'bean' ? '跳跳豆' : '声波精灵', { color: '#ffffff', fontSize: '16px' })
+        .text(spot.cx, spot.cy + 15, spot.id === 'bean' ? '跳跳豆' : '声波精灵', { ...FONT, color: '#ffffff', fontSize: '16px' })
         .setOrigin(0.5)
-      const status = this.add.text(spot.cx, spot.cy + 45, '', { fontSize: '14px' }).setOrigin(0.5)
+      const status = this.add.text(spot.cx, spot.cy + 45, '', { ...FONT, fontSize: '14px' }).setOrigin(0.5)
       this.skinCards.push({ id: spot.id, bg, status })
     }
     this.updateSkinCards({ owned: ['bean'], active: this.activeSkin })
@@ -204,7 +208,7 @@ export class BootScene extends Phaser.Scene {
     for (const card of this.skinCards) {
       const owned = w.owned.includes(card.id)
       const active = w.active === card.id
-      card.bg.setStrokeStyle(2, active ? 0x7a6ff0 : 0x3a3d5c)
+      card.bg.setStrokeStyle(2, active ? NEON.platEdge : NEON.panelEdge)
       if (active) {
         card.status.setColor('#7a6ff0')
         card.status.setText('● 穿着中')
@@ -237,14 +241,14 @@ export class BootScene extends Phaser.Scene {
     p.add(this.add.rectangle(0, 0, 480, 250, 0x0f0e1a, 0.95).setStrokeStyle(2, 0x7a6ff0))
     p.add(
       this.add
-        .text(0, -96, '声音灵敏度', { color: '#ffe6a7', fontSize: '22px', fontStyle: 'bold' })
+        .text(0, -96, '声音灵敏度', { ...FONT, color: '#ffe6a7', fontSize: '22px', fontStyle: 'bold' })
         .setOrigin(0.5),
     )
-    this.sensLabel = this.add.text(0, -60, '', { color: '#ffffff', fontSize: '16px' }).setOrigin(0.5)
+    this.sensLabel = this.add.text(0, -60, '', { ...FONT, color: '#ffffff', fontSize: '16px' }).setOrigin(0.5)
     p.add(this.sensLabel)
     ;[0.6, 0.8, 1.0, 1.3, 1.6].forEach((v, i) => {
       const t = this.add
-        .text(-184 + i * 92, -14, `${v}×`, { color: '#cfd2e8', fontSize: '18px' })
+        .text(-184 + i * 92, -14, `${v}×`, { ...FONT, color: '#cfd2e8', fontSize: '18px' })
         .setOrigin(0.5)
         .setInteractive({ useHandCursor: true })
         .on('pointerdown', () => {
@@ -256,7 +260,7 @@ export class BootScene extends Phaser.Scene {
     })
     p.add(
       this.add
-        .text(0, 24, '喊不动调高 · 轻声就跳调低', { color: '#566079', fontSize: '14px' })
+        .text(0, 24, '喊不动调高 · 轻声就跳调低', { ...FONT, color: '#566079', fontSize: '14px' })
         .setOrigin(0.5),
     )
     p.add(this.add.rectangle(-80, 58, 160, 12, 0x000000).setOrigin(0, 0.5).setAlpha(0.5))
@@ -264,7 +268,7 @@ export class BootScene extends Phaser.Scene {
     p.add(this.sensFill)
     p.add(
       this.add
-        .text(0, 88, '对着麦克风喊一声——绿条能顶到头就对了', { color: '#9aa1bd', fontSize: '13px' })
+        .text(0, 88, '对着麦克风喊一声——绿条能顶到头就对了', { ...FONT, color: '#9aa1bd', fontSize: '13px' })
         .setOrigin(0.5),
     )
     this.sensPanel = p

@@ -4,6 +4,7 @@ import { reportGameState, sendBossAction } from '../audio/voice'
 import { applyBossEvents, initialBossUi, type BossEvent, type BossUiState } from '../game/bossui'
 import { BLOCK_WINDOW_MS, blockedByShout } from '../game/qte'
 import { reportRun } from '../player'
+import { FONT, neonPanel } from '../game/theme'
 
 const W = 960
 const H = 540
@@ -26,9 +27,9 @@ export class BossScene extends Phaser.Scene {
   private revealText!: Phaser.GameObjects.Text
   private bufferText!: Phaser.GameObjects.Text
   private banner!: Phaser.GameObjects.Text
-  private blockOkBtn!: Phaser.GameObjects.Text
-  private blockFailBtn!: Phaser.GameObjects.Text
-  private declineSwapBtn!: Phaser.GameObjects.Text
+  private blockOkBtn!: Phaser.GameObjects.Container
+  private blockFailBtn!: Phaser.GameObjects.Container
+  private declineSwapBtn!: Phaser.GameObjects.Container
 
   constructor() {
     super('boss')
@@ -45,8 +46,13 @@ export class BossScene extends Phaser.Scene {
 
   create() {
     this.cameras.main.setBackgroundColor('#12101e')
+    // 圆角面板底板先建垫底，文字按原布局叠上：密数+情报 / 报数记录 / 中央提示+输入
+    neonPanel(this, 12, 92, 330, 56)
+    neonPanel(this, 12, 156, 560, 200)
+    neonPanel(this, W / 2 - 190, 366, 380, 80)
     this.add
       .text(W / 2, 44, '⚔ 挑战者 · 猜数字对决', {
+        ...FONT,
         color: '#ef476f',
         fontSize: '30px',
         fontStyle: 'bold',
@@ -54,23 +60,24 @@ export class BossScene extends Phaser.Scene {
       .setOrigin(0.5)
     this.add
       .text(W / 2, 76, '报三个不重复数字 · 数字与位置都对才算命中', {
+        ...FONT,
         color: '#7a6ff0',
         fontSize: '15px',
       })
       .setOrigin(0.5)
 
-    this.mySecretText = this.add.text(24, 100, '我的密数：待上报', { color: '#ffd23f', fontSize: '16px' })
-    this.revealText = this.add.text(24, 124, '亮位情报：暂无', { color: '#38b764', fontSize: '16px' })
-    this.rowsText = this.add.text(24, 152, '', { color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
+    this.mySecretText = this.add.text(24, 100, '我的密数：待上报', { ...FONT, color: '#ffd23f', fontSize: '16px' })
+    this.revealText = this.add.text(24, 124, '亮位情报：暂无', { ...FONT, color: '#38b764', fontSize: '16px' })
+    this.rowsText = this.add.text(24, 152, '', { ...FONT, color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
     this.hintText = this.add
-      .text(W / 2, 384, this.ui.hint, { color: '#ffe6a7', fontSize: '20px' })
+      .text(W / 2, 384, this.ui.hint, { ...FONT, color: '#ffe6a7', fontSize: '20px' })
       .setOrigin(0.5)
     this.bufferText = this.add
-      .text(W / 2, 418, '－ － －', { color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
+      .text(W / 2, 418, '－ － －', { ...FONT, color: '#ffffff', fontSize: '26px', fontStyle: 'bold' })
       .setOrigin(0.5)
 
     this.banner = this.add
-      .text(W / 2, H / 2 - 40, '', { color: '#ffd23f', fontSize: '42px', fontStyle: 'bold' })
+      .text(W / 2, H / 2 - 40, '', { ...FONT, color: '#ffd23f', fontSize: '42px', fontStyle: 'bold' })
       .setOrigin(0.5)
       .setDepth(5)
 
@@ -118,12 +125,17 @@ export class BossScene extends Phaser.Scene {
     sendBossAction('block', { blocked })
   }
 
+  // 数字键盘是纯键盘外的调试兜底通道，不面板化（面板会与紧凑行距重叠）
   private buildKeypad() {
     const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'OK']
     keys.forEach((k, i) => {
       const x = W / 2 - 132 + (i % 3) * 132
       const y = 468 + Math.floor(i / 3) * 22
-      this.addButton(k, x, y, () => this.onKey(k === '⌫' ? 'Backspace' : k === 'OK' ? 'Enter' : k))
+      this.add
+        .text(x, y, k, { ...FONT, color: '#9aa1bd', fontSize: '17px' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.onKey(k === '⌫' ? 'Backspace' : k === 'OK' ? 'Enter' : k))
     })
   }
 
@@ -139,6 +151,7 @@ export class BossScene extends Phaser.Scene {
     this.addButton('投降', W - 90, 60, () => sendBossAction('surrender'), '#566079')
   }
 
+  // 按钮统一为圆角底板+文字的容器：阶段按钮整组 show/hide，底板跟随
   private addButton(
     label: string,
     x: number,
@@ -146,11 +159,17 @@ export class BossScene extends Phaser.Scene {
     onClick: () => void,
     color = '#ffffff',
   ) {
-    return this.add
-      .text(x, y, label, { color, fontSize: '17px', fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerdown', onClick)
+    const w = Math.max(56, label.length * 17 + 26)
+    const c = this.add.container(x, y)
+    c.add(neonPanel(this, -w / 2, -16, w, 32))
+    c.add(
+      this.add
+        .text(0, 0, label, { ...FONT, color, fontSize: '17px', fontStyle: 'bold' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', onClick),
+    )
+    return c
   }
 
   private onKey(key: string) {
@@ -223,7 +242,18 @@ export class BossScene extends Phaser.Scene {
     if (this.reported || !this.ui.ended) return
     this.reported = true
     const { finalCoins, outcome } = this.ui.ended
-    this.banner.setText(outcome === 'win' ? '胜！金币翻倍' : '负·原额结算')
+    const win = outcome === 'win'
+    const panel = neonPanel(this, W / 2 - 230, H / 2 - 72, 460, 144, win ? 0x38b764 : 0xef476f)
+      .setDepth(4)
+      .setScale(0.7)
+    this.banner.setText(win ? '胜！金币翻倍' : '负·原额结算')
+    this.banner.setDepth(5).setScale(0.7)
+    const sub = this.add
+      .text(W / 2, H / 2 + 8, `最终 💰 ${finalCoins}`, { ...FONT, color: '#ffe6a7', fontSize: '22px' })
+      .setOrigin(0.5)
+      .setDepth(5)
+      .setScale(0.7)
+    this.tweens.add({ targets: [panel, this.banner, sub], scale: 1, duration: 220, ease: 'Back.Out' })
     void reportRun(this.run.dist, finalCoins)
     this.time.delayedCall(3200, () => this.scene.start('boot'))
   }
