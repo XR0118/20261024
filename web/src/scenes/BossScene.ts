@@ -102,8 +102,7 @@ export class BossScene extends Phaser.Scene {
     }
   }
 
-  // 攻击-格挡 QTE：窗口内逐帧采样本地响度（无麦克风时恒为 0，只能靠点击兜底），
-  // 窗口结束按是否喊中上报；判定纯函数在 game/qte.ts
+  // 攻击-格挡 QTE：窗口内逐帧采样本地响度（无麦克风恒为 0，只能靠点击兜底）
   private updateQTE(time: number) {
     if (this.ui.stage !== 'attack' || this.qteStartedAt < 0) return
     this.qteSamples.push(mic.level())
@@ -115,6 +114,7 @@ export class BossScene extends Phaser.Scene {
     const blocked = blockedByShout(this.qteSamples)
     this.qteStartedAt = -1
     this.qteSamples = []
+    this.hintText.setText(blocked ? '喊中格挡！' : '没喊出来……')
     sendBossAction('block', { blocked })
   }
 

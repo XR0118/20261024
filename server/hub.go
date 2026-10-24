@@ -62,6 +62,7 @@ type GameHub struct {
 	battle       *boss.Battle
 	newRng       func() *rand.Rand // Boss 战随机源；测试注入固定 seed
 	blockTimeout time.Duration     // 攻击等格挡结果的兜底超时；测试注入短值
+	blockGen     uint64            // 攻击代数：新一轮攻击使旧超时计时作废
 }
 
 func NewGameHub(brain *Brain) *GameHub {
@@ -324,13 +325,16 @@ func (h *GameHub) applyInput(in boss.Input) {
 }
 
 // armBlockTimeout 攻击兜底：窗口内无格挡结果上报（页面僵死/断连）按失败判负。
+// 代数计数防同一场对局的二次攻击被首攻残留计时器误判（快速格挡→放弃
+// 换数→Boss 再全中可能落在首攻超时窗内）；调用方须持有 bossMu。
 func (h *GameHub) armBlockTimeout() {
-	b := h.battle
+	h.blockGen++
+	b, gen := h.battle, h.blockGen
 	time.AfterFunc(h.blockTimeout, func() {
 		h.bossMu.Lock()
 		defer h.bossMu.Unlock()
-		if h.battle != b || b.Phase() != boss.PhaseAttack {
-			return // 已上报/弃局/新对局，超时作废
+		if gen != h.blockGen || h.battle != b || b.Phase() != boss.PhaseAttack {
+			return // 新一轮攻击/上报/弃局/新对局，本计时作废
 		}
 		evs, err := b.ReportBlock(false)
 		h.settleBoss(evs, err)

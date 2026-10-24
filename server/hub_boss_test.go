@@ -297,6 +297,55 @@ func TestBlockTimeoutLosesBattle(t *testing.T) {
 	}
 }
 
+// 同一场对局的第二攻必须由自己的计时兜底：首攻的残留计时器若未作废，
+// 会把新格挡窗口提前判负（快速格挡→放弃换数→Boss 再全中的交错）。
+func TestSecondAttackNotKilledByFirstTimer(t *testing.T) {
+	h, _ := newBossHub(t)
+	h.blockTimeout = 1 * time.Second
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	// 推进到首攻
+	sawAttack := false
+	for round := 0; round < 20 && !sawAttack; round++ {
+		h.handleSTT("报数 九八七")
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack = true
+			}
+		}
+	}
+	if !sawAttack {
+		t.Fatal("未进入首攻")
+	}
+	blocked := true
+	h.bossAction(browserMsg{Action: "block", Blocked: &blocked})
+	readBossEvents(t, conn) // reveal
+	h.handleSTT("算了")       // 放弃换数
+	readBossEvents(t, conn)
+
+	time.Sleep(400 * time.Millisecond) // 让第二攻落在首攻计时窗内（且远早于其到期）
+	h.handleSTT("报数 九八七")              // Boss 候选集只剩旧密数 → 立即再全中
+	t2 := time.Now()
+	sawAttack2 := false
+	for _, e := range readBossEvents(t, conn) {
+		if e.Kind == "attack" {
+			sawAttack2 = true
+		}
+	}
+	if !sawAttack2 {
+		t.Fatal("放弃换数后 Boss 应立即再全中")
+	}
+	// 不上报，等兜底判负：必须不早于第二攻自己的超时（首攻残留会在 t2+600ms 抢跑）
+	evs := readBossEvents(t, conn)
+	if last := evs[len(evs)-1]; last.Kind != "battle-ended" || last.Outcome != boss.OutcomeLose {
+		t.Fatalf("兜底判负未发生，got %+v", evs)
+	}
+	if el := time.Since(t2); el < 900*time.Millisecond {
+		t.Fatalf("判负提前 %.0fms——疑似首攻残留计时器抢跑", el.Seconds()*1000)
+	}
+}
+
 // Boss 事件转化为语音台词：关键信息逐字直发（exact），氛围走 LLM 事件标记。
 func TestBossEventsAreSpoken(t *testing.T) {
 	h, vl := newBossHub(t)
