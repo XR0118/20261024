@@ -9,6 +9,7 @@ import {
 } from '../audio/voice'
 import { fetchWallet, getPlayer, setPlayerName } from '../player'
 import { buildSkin, SKIN_PRICE, SkinId, startIdleBreathing } from '../game/skin'
+import { paintNightSky } from '../game/theme'
 
 const W = 960
 const H = 540
@@ -60,7 +61,8 @@ export class BootScene extends Phaser.Scene {
   }
 
   create() {
-    this.cameras.main.setBackgroundColor('#1a1c2c')
+    // 首页与跑酷同款夜空（固定 seed：首页星空每次一致），风格零割裂
+    paintNightSky(this, 20261024, W, H)
 
     this.add
       .text(W / 2, 70, '闻声起跳 · LoudLeap', { color: '#ffe6a7', fontSize: '44px', fontStyle: 'bold' })

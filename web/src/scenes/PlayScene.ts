@@ -4,6 +4,7 @@ import { reportGameState, sendBossEnter, sendRunEnded, voiceListening } from '..
 import { makeLevel, type Level } from '../game/level'
 import { getPlayer, reportRun } from '../player'
 import { applyRunAnimation, buildSkin, urlSkin, SKIN_BODY_H, SKIN_BODY_W } from '../game/skin'
+import { NEON, paintNightSky } from '../game/theme'
 
 const W = 960
 const H = 540
@@ -53,13 +54,15 @@ export class PlayScene extends Phaser.Scene {
   create() {
     this.level = makeLevel(this.seed)
 
-    this.cameras.main.setBackgroundColor('#1a1c2c')
+    paintNightSky(this, this.seed, W, H, this.level.worldWidth)
     this.physics.world.setBounds(0, -400, this.level.worldWidth, H + 1000)
     this.cameras.main.setBounds(0, 0, this.level.worldWidth, H)
 
     const solids: Phaser.GameObjects.Rectangle[] = []
-    for (const [x, w, y] of this.level.ground) solids.push(this.solid(x, w, y, 40, 0x4c5f96))
-    for (const [x, w, y] of this.level.platforms) solids.push(this.solid(x, w, y, 16, 0x7a6ff0))
+    for (const [x, w, y] of this.level.ground)
+      solids.push(this.solid(x, w, y, 40, NEON.groundFill, NEON.groundEdge))
+    for (const [x, w, y] of this.level.platforms)
+      solids.push(this.solid(x, w, y, 16, NEON.platFill, NEON.platEdge))
 
     // 造型优先级：URL 调试参数 > BootScene 传入的服务端当前造型
     const skin = urlSkin() ?? (this.skin === 'wave' ? 'wave' : 'bean')
@@ -75,10 +78,15 @@ export class PlayScene extends Phaser.Scene {
     this.spawnCoins()
     this.spawnHazards()
 
-    // 终点旗
-    this.add.rectangle(this.level.worldWidth - 60, 480 - 90, 8, 180, 0xef7d57)
+    // 终点门：青色霓虹光柱，与可踩地面同一信号色（到这儿就是终点）
+    const fx = this.level.worldWidth - 60
+    const finishGlow = this.add.graphics()
+    finishGlow.fillStyle(NEON.groundEdge, 0.25)
+    finishGlow.fillRect(fx - 14, 290, 28, 190)
+    finishGlow.fillStyle(NEON.topLight, 0.9)
+    finishGlow.fillRect(fx - 2, 290, 4, 190)
     this.add
-      .text(this.level.worldWidth - 50, 480 - 180, 'FINISH', { color: '#ef7d57', fontSize: '20px' })
+      .text(fx, 270, 'FINISH', { color: '#3ef0c8', fontSize: '20px', fontStyle: 'bold' })
       .setOrigin(0.5)
 
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1)
@@ -105,16 +113,48 @@ export class PlayScene extends Phaser.Scene {
   private spawnHazards() {
     const group = this.physics.add.staticGroup()
     for (const [x, y, w, h] of this.level.hazards) {
-      const bar = this.add.rectangle(x + w / 2, y + h / 2, w, h, 0xef476f)
-      bar.setStrokeStyle(2, 0xb3001b)
+      // 物理体透明：视觉交给斜纹警示带，碰撞形状不变
+      const bar = this.add.rectangle(x + w / 2, y + h / 2, w, h, NEON.hazardFill, 0)
       group.add(bar)
+      this.hazardStripes(x, y, w, h)
     }
     this.physics.add.overlap(this.player, group, () => this.endRun('撞上横杆！', 'bar'))
   }
 
-  private solid(x: number, w: number, topY: number, h: number, color: number) {
-    const r = this.add.rectangle(x + w / 2, topY + h / 2, w, h, color)
+  // 红底斜纹警示带（工程围挡同款）：远看醒目可提前预判，近看纹样清晰
+  private hazardStripes(x: number, y: number, w: number, h: number) {
+    const g = this.add.graphics()
+    g.fillStyle(NEON.hazardFill, 1)
+    g.fillRect(x, y, w, h)
+    g.fillStyle(NEON.hazardStripe, 0.9)
+    const step = 14
+    for (let sx = x - h; sx < x + w; sx += step) {
+      g.fillPoints(
+        [
+          { x: sx, y: y + h },
+          { x: sx + h, y },
+          { x: sx + h + 7, y },
+          { x: sx + 7, y: y + h },
+        ],
+        true,
+      )
+    }
+    g.lineStyle(2, NEON.hazardEdge, 1)
+    g.strokeRect(x, y, w, h)
+  }
+
+  private solid(x: number, w: number, topY: number, h: number, fill: number, edge: number) {
+    const r = this.add.rectangle(x + w / 2, topY + h / 2, w, h, fill)
     this.physics.add.existing(r, true)
+    // 霓虹描边：宽而淡的外圈模拟辉光，亮内圈勾边——纯矢量发光效果
+    const g = this.add.graphics()
+    g.lineStyle(6, edge, 0.25)
+    g.strokeRect(x, topY, w, h)
+    g.lineStyle(2, edge, 1)
+    g.strokeRect(x, topY, w, h)
+    // 顶面亮线：可踩面的视觉信号，跳跃落点可辨
+    g.fillStyle(NEON.topLight, 0.85)
+    g.fillRect(x, topY, w, 3)
     return r
   }
 
