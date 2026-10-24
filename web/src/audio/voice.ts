@@ -202,14 +202,19 @@ export function reportGameState(state: unknown) {
   ws.send(payload)
 }
 
-// Boss 战动作上行：进场（携本局金币原额）与显式动作（键盘/点击调试通道，
-// 与语音通道在服务端汇入同一引擎）
-export function sendBossEnter(coins: number) {
-  sendJSON({ type: 'boss-enter', coins })
+// Boss 战动作上行：进场（携本局金币原额与玩家名——记忆摘要按名区分试玩者）
+// 与显式动作（键盘/点击调试通道，与语音通道在服务端汇入同一引擎）
+export function sendBossEnter(coins: number, name: string) {
+  sendJSON({ type: 'boss-enter', coins, name })
 }
 
 export function sendBossAction(action: string, extra: Record<string, unknown> = {}) {
   sendJSON({ type: 'boss-action', action, ...extra })
+}
+
+// 途中局终（掉坑/撞杆，未到 Boss 战）通知服务端按准确死因写记忆片段
+export function sendRunEnded(dist: number, coins: number, name: string, cause: 'pit' | 'bar') {
+  sendJSON({ type: 'run-ended', dist, coins, name, cause })
 }
 
 function sendJSON(payload: Record<string, unknown>) {

@@ -107,12 +107,13 @@ func (b *Battle) ReportSecret(s Secret) ([]Event, error) {
 }
 
 // PlayerGuess 玩家报数。未全中则 Boss 立即回合一报；全中即胜。
+// 报数允许重复数字（口语宽松入口，密数才要求不重复）。
 func (b *Battle) PlayerGuess(s Secret) ([]Event, error) {
 	if b.phase != PhasePlayerTurn {
 		return nil, phaseErr(b.phase)
 	}
-	if !s.Valid() {
-		return nil, fmt.Errorf("报数必须是三个不重复的数字")
+	if !s.GuessValid() {
+		return nil, fmt.Errorf("报数要报三位数字")
 	}
 	h := hits(s, b.bossSecret)
 	evs := []Event{{Kind: KindGuessResult, Turn: TurnPlayer, Guess: s.String(), Hits: h}}
@@ -309,7 +310,7 @@ type Secret [3]int
 
 func (s Secret) String() string { return fmt.Sprintf("%d%d%d", s[0], s[1], s[2]) }
 
-// Valid 校验三个不重复的个位数字。
+// Valid 校验三个不重复的个位数字（密数口径）。
 func (s Secret) Valid() bool {
 	var seen [10]bool
 	for _, d := range s {
@@ -317,6 +318,16 @@ func (s Secret) Valid() bool {
 			return false
 		}
 		seen[d] = true
+	}
+	return true
+}
+
+// GuessValid 报数口径：三位个位数字即可，允许重复。
+func (s Secret) GuessValid() bool {
+	for _, d := range s {
+		if d < 0 || d > 9 {
+			return false
+		}
 	}
 	return true
 }

@@ -25,9 +25,12 @@ type LinxClient struct {
 	muted        bool // TTS 播放期间暂停上行，防止扬声器串回麦克风
 	playing      bool // 跑酷进行中：无语音需求，停上行，TTS 收尾后主动断会话（按会话时长计费）
 	wake         chan struct{}
-	speakCh      chan speakReq // 台词队列：串行播放，防 detect 打断
-	wmu          sync.Mutex    // conn 写互斥：三类写来源并存（音频转发/台词/监听控制）
-	ttsWait      *ttsWaitState // 当前台词的 TTS 完成信号（start→stop 成对）
+	speakCh      chan speakReq        // 台词队列：串行播放，防 detect 打断
+	wmu          sync.Mutex           // conn 写互斥：三类写来源并存（音频转发/台词/监听控制）
+	ttsWait      *ttsWaitState        // 当前台词的 TTS 完成信号（start→stop 成对）
+	echoGuard    map[string]time.Time // detect 注入文本的回环防抖（见 guardEcho）
+	speakActive  bool                 // 自己的台词已发出（含等待播完）
+	speakEndedAt time.Time            // 台词播完时刻（其后的短窗口见 duringOwnSpeech）
 	OnSTT        func(text string)
 	OnTTSFrame   func(opus []byte)
 	OnVoiceState func(listening bool)
@@ -37,6 +40,7 @@ type LinxClient struct {
 type speakReq struct {
 	text  string
 	exact bool
+	after func() // 台词播完（或发送失败/超时）后回调，恰好一次——用于「先说完再推进」的时序
 }
 
 // ttsWaitState 台词的 TTS 完成判定：必须观察到 start 之后的 stop 才算播完——
@@ -47,7 +51,12 @@ type ttsWaitState struct {
 }
 
 func NewLinxClient(mac string) *LinxClient {
-	return &LinxClient{Mac: mac, wake: make(chan struct{}, 1), speakCh: make(chan speakReq, 8)}
+	return &LinxClient{
+		Mac:       mac,
+		wake:      make(chan struct{}, 1),
+		speakCh:   make(chan speakReq, 8),
+		echoGuard: map[string]time.Time{},
+	}
 }
 
 const otaURL = "https://xrobo.qiniuapi.com/v1/ota/"
@@ -245,7 +254,10 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 				}
 				c.setListening(true)
 			case "stt":
-				if c.OnSTT != nil && msg.Text != "" {
+				// 台词播放窗口内到达的 stt 只能是自己台词的 ASR 回显：
+				// 回显并非逐字（实测「密数已确认」被听成「秘书已确认。」），
+				// 精确匹配挡不住，会以幽灵报数重入引擎
+				if c.OnSTT != nil && msg.Text != "" && !c.isEcho(msg.Text) && !c.duringOwnSpeech() {
 					log.Printf("linx stt: %q", msg.Text)
 					c.OnSTT(msg.Text)
 				}
@@ -319,12 +331,58 @@ func (c *LinxClient) writeConn(ctx context.Context, conn *websocket.Conn, typ we
 	return conn.Write(ctx, typ, data)
 }
 
+// guardEcho 登记一句即将注入的台词：平台会把 detect 的文本原样回显为
+// stt 消息，isEcho 据此丢弃回显，防止自己的台词重入引擎。
+func (c *LinxClient) guardEcho(text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	c.echoGuard[text] = now.Add(15 * time.Second)
+	for k, exp := range c.echoGuard {
+		if now.After(exp) {
+			delete(c.echoGuard, k)
+		}
+	}
+}
+
+// isEcho 一次性命中：真正的玩家重复话语最多牺牲一次。
+func (c *LinxClient) isEcho(text string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.echoGuard[text]; !ok {
+		return false
+	}
+	delete(c.echoGuard, text)
+	return true
+}
+
+// duringOwnSpeech 台词播放期间浏览器上行本就被静音，玩家真实语音到不了
+// 引擎；此时/其后极短窗口内的 stt 只能是自己台词的 ASR 回显，一并丢弃。
+func (c *LinxClient) duringOwnSpeech() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.speakActive || time.Since(c.speakEndedAt) < 700*time.Millisecond
+}
+
 // Speak 排队一句台词（非阻塞）；exact 为 true 时逐字直发而非交平台 LLM。
 func (c *LinxClient) Speak(text string, exact bool) {
+	c.enqueueSpeak(text, exact, nil)
+}
+
+// SpeakThen 排队一句台词并在其播完后回调——攻击事件押后到宣告说完再下发，
+// 玩家听到「接我这招」的瞬间 QTE 窗口才开。
+func (c *LinxClient) SpeakThen(text string, exact bool, after func()) {
+	c.enqueueSpeak(text, exact, after)
+}
+
+func (c *LinxClient) enqueueSpeak(text string, exact bool, after func()) {
 	select {
-	case c.speakCh <- speakReq{text, exact}:
+	case c.speakCh <- speakReq{text, exact, after}:
 	default:
 		log.Printf("linx: 台词队列已满，丢弃 %q", text)
+		if after != nil {
+			go after()
+		}
 	}
 }
 
@@ -341,13 +399,29 @@ func (c *LinxClient) speakLoop(ctx context.Context) {
 
 // deliverSpeak 发一条 detect。必须串行：新 detect 会打断未播完的 TTS
 // （spike 实测 tts stop is_aborted=true），发完等 tts stop 再放下一条。
+// after 在所有出口都恰好触发一次——押后的游戏事件不能因台词丢失而永久卡住。
 func (c *LinxClient) deliverSpeak(ctx context.Context, req speakReq) {
+	defer func() {
+		if req.after != nil {
+			go req.after()
+		}
+	}()
 	deadline := time.Now().Add(4 * time.Second) // Boss 进场后会话可能还在重连
 	for {
 		c.mu.Lock()
 		conn, sid := c.conn, c.sessionID
 		c.mu.Unlock()
 		if conn != nil && sid != "" {
+			c.guardEcho(req.text)
+			c.mu.Lock()
+			c.speakActive = true
+			c.mu.Unlock()
+			defer func() {
+				c.mu.Lock()
+				c.speakActive = false
+				c.speakEndedAt = time.Now()
+				c.mu.Unlock()
+			}()
 			c.armTTSDone()
 			msg := map[string]any{
 				"session_id": sid,

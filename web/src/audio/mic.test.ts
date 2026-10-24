@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { JUMP_THRESHOLD, levelToPower } from './mic'
+import { JUMP_THRESHOLD, levelToPower, scaleLevel } from './mic'
+
+describe('scaleLevel', () => {
+  it('灵敏度系数缩放响度，封顶 1', () => {
+    expect(scaleLevel(0.1, 1)).toBeCloseTo(0.4)
+    expect(scaleLevel(0.1, 1.6)).toBeCloseTo(0.64)
+    expect(scaleLevel(0.3, 2)).toBe(1)
+  })
+})
 
 describe('levelToPower', () => {
   it('低于阈值不算喊，返回 null', () => {

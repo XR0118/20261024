@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
@@ -38,6 +39,7 @@ type voiceLink interface {
 	SetPlaying(bool)
 	SendAudio(context.Context, []byte) error
 	Speak(text string, exact bool)
+	SpeakThen(text string, exact bool, after func())
 }
 
 // browserMsg 浏览器主通道文本消息的全集。
@@ -48,15 +50,20 @@ type browserMsg struct {
 	Action  string    `json:"action"`
 	Digits  string    `json:"digits"`
 	Blocked *bool     `json:"blocked"`
+	Dist    int       `json:"dist"`
+	Name    string    `json:"name,omitempty"`
+	Cause   string    `json:"cause,omitempty"` // 途中局终死因：pit=掉坑，bar=撞杆
 }
 
 type GameHub struct {
-	mu    sync.RWMutex
-	state GameState
-	conn  *websocket.Conn
-	brain *Brain
-	linx  voiceLink
-	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	mu         sync.RWMutex
+	state      GameState
+	conn       *websocket.Conn
+	brain      *Brain
+	linx       voiceLink
+	bconn      *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	mem        *MemoryClient   // 局终记忆写入；nil=未配置，无操作
+	playerName string          // 当前玩家名（boss-enter/run-ended 带上）：记忆摘要按名区分试玩者
 
 	bossMu       sync.Mutex
 	battle       *boss.Battle
@@ -69,7 +76,7 @@ func NewGameHub(brain *Brain) *GameHub {
 	return &GameHub{
 		brain:        brain,
 		newRng:       func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) },
-		blockTimeout: 3 * time.Second,
+		blockTimeout: 3500 * time.Millisecond, // 窗口 2.5s + 上报余量
 	}
 }
 
@@ -308,6 +315,10 @@ func (h *GameHub) applyInput(in boss.Input) {
 		switch {
 		case in.Guess != (boss.Secret{}):
 			evs, err = b.SwapSecret(in.Guess)
+			if err == nil {
+				// 与开局上报同源：换数也要回显新密数，否则界面停留在旧密数
+				evs = append(evs, boss.Event{Kind: "secret-confirmed", Guess: in.Guess.String(), Message: "新密数已确认"})
+			}
 		case in.Intent == boss.IntentDeclineSwap:
 			evs, err = b.DeclineSwap()
 		case in.Intent == boss.IntentSwap:
@@ -317,11 +328,6 @@ func (h *GameHub) applyInput(in boss.Input) {
 		// QTE 进行中：报数与意图都不受理，格挡结果只走浏览器上报
 	}
 	h.settleBoss(evs, err)
-	for _, e := range evs {
-		if e.Kind == boss.KindAttack {
-			h.armBlockTimeout()
-		}
-	}
 }
 
 // armBlockTimeout 攻击兜底：窗口内无格挡结果上报（页面僵死/断连）按失败判负。
@@ -343,6 +349,8 @@ func (h *GameHub) armBlockTimeout() {
 
 // settleBoss 收局并推送：battle-ended 时先回 idle 再推（读端收到
 // battle-ended 的瞬间相位必然已是 idle），语音回到待命连接。
+// 攻击事件押后：等「接我这招」台词播完再下发并开兜底计时——
+// 玩家要先听见攻击宣告，QTE 窗口才有意义（实机节奏踩过）。
 func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 	if err != nil {
 		h.pushBossEvents([]boss.Event{{Kind: "error", Message: err.Error()}})
@@ -351,7 +359,141 @@ func (h *GameHub) settleBoss(evs []boss.Event, err error) {
 	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
 		h.setPhase(phaseIdle)
 	}
-	h.pushBossEvents(evs)
+	if idx := attackIndex(evs); idx >= 0 {
+		pre, tail := evs[:idx], evs[idx:]
+		h.pushBoss(pre)
+		h.speakEvents(pre)
+		if line, exact, ok := challengerLine(tail[0]); ok {
+			h.speakThen(line, exact, func() {
+				// 回调跑在台词 goroutine 上，武装计时须补 bossMu（其内读写 battle/blockGen）
+				h.bossMu.Lock()
+				h.armBlockTimeout()
+				h.bossMu.Unlock()
+				h.pushBoss(tail)
+			})
+		} else {
+			h.armBlockTimeout()
+			h.pushBoss(tail)
+		}
+	} else {
+		h.pushBoss(evs)
+		h.speakEvents(evs)
+		// 轮到玩家时给一句短提示：Boss 台词播放期间上行静音，
+		// 玩家不知道何时开口（实机反馈「说了没反应」）
+		if h.battle != nil && h.battle.Phase() == boss.PhasePlayerTurn && hasBossGuess(evs) {
+			h.speak("该你了，报数！", true)
+		}
+	}
+	if h.battle != nil && h.battle.Phase() == boss.PhaseEnded {
+		h.writeRunMemory(evs)
+	}
+}
+
+func attackIndex(evs []boss.Event) int {
+	for i, e := range evs {
+		if e.Kind == boss.KindAttack {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasBossGuess(evs []boss.Event) bool {
+	for _, e := range evs {
+		if e.Kind == boss.KindGuessResult && e.Turn == boss.TurnBoss && e.Hits < 3 {
+			return true
+		}
+	}
+	return false
+}
+
+// writeRunMemory 局终两件事：REST 写记忆片段（教练复盘的数据来源，失败仅
+// 日志）；向人格注入【本局结束】标记——按 persona 提示词教练默认做总结。
+func (h *GameHub) writeRunMemory(evs []boss.Event) {
+	var ended *boss.Event
+	for i := range evs {
+		if evs[i].Kind == boss.KindBattleEnded {
+			ended = &evs[i]
+		}
+	}
+	if ended == nil {
+		return
+	}
+	st := h.State()
+	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：Boss 战%s",
+		h.playerNameOf(), st.Dist, ended.FinalCoins, outcomeText(ended.Outcome))
+	h.speak("【本局结束】"+fact, false)
+	h.writeMemory("【对局】" + fact)
+}
+
+// playerNameOf 记忆归档仍按设备 MAC（平台读取侧按终端身份取节点），
+// 多人共用一台设备时靠摘要里的玩家名区分——写入侧不按名分桶。
+func (h *GameHub) playerNameOf() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.playerName != "" {
+		return h.playerName
+	}
+	return "无名侠"
+}
+
+// handleRunEnded 途中局终（掉坑/撞杆，未到 Boss 战）的记忆与教练标记。
+// Boss 战进行中忽略：该局的记忆由 battle-ended 路径负责，防同局双写
+// （异常旧页面在战斗中补发 run-ended 的场景）。
+func (h *GameHub) handleRunEnded(m browserMsg) {
+	if h.bossActive() {
+		return
+	}
+	if m.Name != "" {
+		h.rememberPlayerName(m.Name)
+	}
+	fact := fmt.Sprintf("%s：距离 %d 米，金币 %d，结局：%s",
+		h.playerNameOf(), m.Dist, m.Coins, causeText(m.Cause))
+	h.speak("【本局结束】"+fact, false)
+	h.writeMemory("【对局】" + fact)
+}
+
+// causeText 途中局终的准确死因——笼统的「摔死」会把撞杆也算进去，复盘失真。
+func causeText(c string) string {
+	switch c {
+	case "pit":
+		return "掉进坑里"
+	case "bar":
+		return "撞上横杆"
+	}
+	return "途中局终"
+}
+
+func (h *GameHub) rememberPlayerName(name string) {
+	h.mu.Lock()
+	h.playerName = name
+	h.mu.Unlock()
+}
+
+func (h *GameHub) writeMemory(summary string) {
+	if h.mem == nil {
+		return
+	}
+	mem := h.mem
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := mem.WriteRun(ctx, summary); err != nil {
+			log.Printf("memory write: %v", err)
+		}
+	}()
+}
+
+func outcomeText(o boss.Outcome) string {
+	switch o {
+	case boss.OutcomeWin:
+		return "胜（金币翻倍）"
+	case boss.OutcomeLose:
+		return "负（格挡失败）"
+	case boss.OutcomeSurrender:
+		return "认输"
+	}
+	return string(o)
 }
 
 // abandonBoss 页面重载即弃局：刷新后的新页面不应接手旧战斗状态。
@@ -366,8 +508,30 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 	if len(evs) == 0 {
 		return
 	}
+	h.pushBoss(evs)
+	h.speakEvents(evs)
+}
+
+func (h *GameHub) pushBoss(evs []boss.Event) {
+	if len(evs) == 0 {
+		return
+	}
 	h.pushBrowserJSON(map[string]any{"type": "boss-events", "events": evs})
-	for _, e := range evs {
+}
+
+// speakEvents 台词生成。相邻的「玩家判定 + Boss 报数」合并成一句，
+// 每回合 TTS 轮次从 2 压到 1——攻击前的节奏实测太慢。
+func (h *GameHub) speakEvents(evs []boss.Event) {
+	for i := 0; i < len(evs); i++ {
+		e := evs[i]
+		next := i+1 < len(evs)
+		if next && e.Kind == boss.KindGuessResult && e.Turn == boss.TurnPlayer &&
+			evs[i+1].Kind == boss.KindGuessResult && evs[i+1].Turn == boss.TurnBoss {
+			h.speak(fmt.Sprintf("你猜中了%s位。听好了，我报：%s！",
+				hitsCn[e.Hits], speakDigits(evs[i+1].Guess)), true)
+			i++
+			continue
+		}
 		if line, exact, ok := challengerLine(e); ok {
 			h.speak(line, exact)
 		}
@@ -375,12 +539,24 @@ func (h *GameHub) pushBossEvents(evs []boss.Event) {
 }
 
 func (h *GameHub) speak(line string, exact bool) {
+	h.speakThen(line, exact, nil)
+}
+
+func (h *GameHub) speakThen(line string, exact bool, after func()) {
 	h.mu.RLock()
 	linx := h.linx
 	h.mu.RUnlock()
-	if linx != nil {
-		linx.Speak(line, exact)
+	if linx == nil {
+		if after != nil {
+			go after()
+		}
+		return
 	}
+	if after == nil {
+		linx.Speak(line, exact)
+		return
+	}
+	linx.SpeakThen(line, exact, after)
 }
 
 // 浏览器主通道：二进制=上行 OPUS 帧；文本=游戏状态上报 + Boss 战动作。
@@ -430,9 +606,14 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 			case "game-state":
 				h.applyGameState(msg.State)
 			case "boss-enter":
+				if msg.Name != "" {
+					h.rememberPlayerName(msg.Name)
+				}
 				h.enterBoss(msg.Coins)
 			case "boss-action":
 				h.bossAction(msg)
+			case "run-ended":
+				h.handleRunEnded(msg)
 			}
 		}
 	}

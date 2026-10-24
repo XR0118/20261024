@@ -21,6 +21,8 @@ func TestRouteInputParsesGuessVariants(t *testing.T) {
 		{"三百五", "350"},   // 口语省“十”：三百五=350
 		{"幺三八", "138"},   // 电话/军语逐字读法
 		{"三　七　八", "378"}, // 全角空格分隔（中文 STT 高频）
+		{"五五五", "555"},   // 报数允许重复数字（密数才要求不重复）
+		{"113", "113"},
 	}
 	for _, c := range cases {
 		in, err := RouteInput(c.text)
@@ -34,9 +36,9 @@ func TestRouteInputParsesGuessVariants(t *testing.T) {
 	}
 }
 
-// 携带数字但非法：拒绝（错误可直接 TTS），不落入关键词。
+// 携带数字但位数不对：拒绝（错误可直接 TTS），不落入关键词。
 func TestRouteInputRejectsInvalidGuesses(t *testing.T) {
-	cases := []string{"五五五", "113", "九九", "十二", "3", "1234"}
+	cases := []string{"九九", "十二", "3", "1234"}
 	for _, text := range cases {
 		in, err := RouteInput(text)
 		if err == nil {

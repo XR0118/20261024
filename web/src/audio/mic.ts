@@ -14,6 +14,22 @@ export function levelToPower(level: number): number | null {
   return MIN_JUMP_VELOCITY + t * (MAX_JUMP_VELOCITY - MIN_JUMP_VELOCITY)
 }
 
+const SENS_KEY = 'loudleap_sens'
+
+// scaleLevel 响度 → 灵敏度缩放后的判定值：不同麦克风/房间/嗓门差异
+// 很大（喊不动调高、轻声就跳调低），系数作用于 level() 输出——
+// 跳跃/喷气/QTE 格挡/音量条全链路同步缩放。
+export function scaleLevel(rms: number, sensitivity: number): number {
+  return Math.min(rms * 4 * sensitivity, 1)
+}
+
+function loadSensitivity(): number {
+  if (typeof localStorage === 'undefined') return 1 // 测试环境（node）无 localStorage
+  const v = Number(localStorage.getItem(SENS_KEY))
+  if (!Number.isFinite(v) || v < 0.4 || v > 2.5) return 1
+  return v
+}
+
 type MicState = 'idle' | 'requesting' | 'running' | 'denied'
 
 class Mic {
@@ -23,6 +39,14 @@ class Mic {
   private envelope = 0
   private stream?: MediaStream
   state: MicState = 'idle'
+  sensitivity = loadSensitivity()
+
+  setSensitivity(v: number) {
+    this.sensitivity = Math.min(2.5, Math.max(0.4, v))
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SENS_KEY, String(this.sensitivity))
+    }
+  }
 
   async start(): Promise<void> {
     try {
@@ -66,8 +90,7 @@ class Mic {
       sum += v * v
     }
     const rms = Math.sqrt(sum / this.buf.length)
-    // 喊声 RMS 通常 0.1~0.3，×4 拉到满量程
-    const target = Math.min(rms * 4, 1)
+    const target = scaleLevel(rms, this.sensitivity)
     // attack 快、release 较快：余响尽快衰减，避免落地时残留包络再次触发起跳
     this.envelope = target > this.envelope ? target : this.envelope * 0.7
     return this.envelope
