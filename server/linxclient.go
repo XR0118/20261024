@@ -29,6 +29,8 @@ type LinxClient struct {
 	wmu          sync.Mutex           // conn 写互斥：三类写来源并存（音频转发/台词/监听控制）
 	ttsWait      *ttsWaitState        // 当前台词的 TTS 完成信号（start→stop 成对）
 	echoGuard    map[string]time.Time // detect 注入文本的回环防抖（见 guardEcho）
+	speakActive  bool                 // 自己的台词已发出（含等待播完）
+	speakEndedAt time.Time            // 台词播完时刻（其后的短窗口见 duringOwnSpeech）
 	OnSTT        func(text string)
 	OnTTSFrame   func(opus []byte)
 	OnVoiceState func(listening bool)
@@ -252,9 +254,10 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 				}
 				c.setListening(true)
 			case "stt":
-				// detect 注入的台词会被平台原样回显为 stt：不过滤，Boss 报的
-				// 数字会被当成玩家的报数再次进引擎，自播死循环（实机踩过）
-				if c.OnSTT != nil && msg.Text != "" && !c.isEcho(msg.Text) {
+				// 台词播放窗口内到达的 stt 只能是自己台词的 ASR 回显：
+				// 回显并非逐字（实测「密数已确认」被听成「秘书已确认。」），
+				// 精确匹配挡不住，会以幽灵报数重入引擎
+				if c.OnSTT != nil && msg.Text != "" && !c.isEcho(msg.Text) && !c.duringOwnSpeech() {
 					log.Printf("linx stt: %q", msg.Text)
 					c.OnSTT(msg.Text)
 				}
@@ -353,6 +356,14 @@ func (c *LinxClient) isEcho(text string) bool {
 	return true
 }
 
+// duringOwnSpeech 台词播放期间浏览器上行本就被静音，玩家真实语音到不了
+// 引擎；此时/其后极短窗口内的 stt 只能是自己台词的 ASR 回显，一并丢弃。
+func (c *LinxClient) duringOwnSpeech() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.speakActive || time.Since(c.speakEndedAt) < 700*time.Millisecond
+}
+
 // Speak 排队一句台词（非阻塞）；exact 为 true 时逐字直发而非交平台 LLM。
 func (c *LinxClient) Speak(text string, exact bool) {
 	c.enqueueSpeak(text, exact, nil)
@@ -402,6 +413,15 @@ func (c *LinxClient) deliverSpeak(ctx context.Context, req speakReq) {
 		c.mu.Unlock()
 		if conn != nil && sid != "" {
 			c.guardEcho(req.text)
+			c.mu.Lock()
+			c.speakActive = true
+			c.mu.Unlock()
+			defer func() {
+				c.mu.Lock()
+				c.speakActive = false
+				c.speakEndedAt = time.Now()
+				c.mu.Unlock()
+			}()
 			c.armTTSDone()
 			msg := map[string]any{
 				"session_id": sid,

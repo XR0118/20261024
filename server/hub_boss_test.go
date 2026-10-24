@@ -485,6 +485,42 @@ func TestRunEndedWithoutBossWritesMemory(t *testing.T) {
 }
 
 // Boss 战进行中的 run-ended（异常旧页面补发）必须被忽略——防同局双写记忆。
+// 换数成功必须回显新密数（secret-confirmed），否则界面停留在旧密数。
+func TestSwapEmitsSecretConfirmed(t *testing.T) {
+	h, _ := newBossHub(t)
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	// 推进到攻击并格挡成功，进入换数抉择
+	sawAttack := false
+	for round := 0; round < 20 && !sawAttack; round++ {
+		h.handleSTT("报数 九八七")
+		for _, e := range readBossEvents(t, conn) {
+			if e.Kind == "attack" {
+				sawAttack = true
+			}
+		}
+	}
+	if !sawAttack {
+		t.Fatal("未进入攻击")
+	}
+	blocked := true
+	h.bossAction(browserMsg{Action: "block", Blocked: &blocked})
+	readBossEvents(t, conn) // reveal
+
+	h.bossAction(browserMsg{Action: "swap", Digits: "567"})
+	evs := readBossEvents(t, conn)
+	found := false
+	for _, e := range evs {
+		if e.Kind == "secret-confirmed" && e.Guess == "567" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("换数应回显新密数 567，got %+v", evs)
+	}
+}
+
 func TestRunEndedIgnoredDuringBattle(t *testing.T) {
 	srv, got := fakeMemoryAPI(t)
 	h, _ := newBossHub(t)

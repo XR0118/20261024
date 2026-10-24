@@ -315,6 +315,10 @@ func (h *GameHub) applyInput(in boss.Input) {
 		switch {
 		case in.Guess != (boss.Secret{}):
 			evs, err = b.SwapSecret(in.Guess)
+			if err == nil {
+				// 与开局上报同源：换数也要回显新密数，否则界面停留在旧密数
+				evs = append(evs, boss.Event{Kind: "secret-confirmed", Guess: in.Guess.String(), Message: "新密数已确认"})
+			}
 		case in.Intent == boss.IntentDeclineSwap:
 			evs, err = b.DeclineSwap()
 		case in.Intent == boss.IntentSwap:
