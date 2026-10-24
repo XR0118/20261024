@@ -51,16 +51,18 @@ type browserMsg struct {
 	Blocked *bool     `json:"blocked"`
 	Dist    int       `json:"dist"`
 	Deaths  int       `json:"deaths"`
+	Name    string    `json:"name,omitempty"`
 }
 
 type GameHub struct {
-	mu    sync.RWMutex
-	state GameState
-	conn  *websocket.Conn
-	brain *Brain
-	linx  voiceLink
-	bconn *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
-	mem   *MemoryClient   // 局终记忆写入；nil=未配置，无操作
+	mu         sync.RWMutex
+	state      GameState
+	conn       *websocket.Conn
+	brain      *Brain
+	linx       voiceLink
+	bconn      *websocket.Conn // 浏览器主通道：音频上行/下行 + 游戏动作 + 状态
+	mem        *MemoryClient   // 局终记忆写入；nil=未配置，无操作
+	playerName string          // 当前玩家名（boss-enter/run-ended 带上）：记忆摘要按名区分试玩者
 
 	bossMu       sync.Mutex
 	battle       *boss.Battle
@@ -374,10 +376,21 @@ func (h *GameHub) writeRunMemory(evs []boss.Event) {
 		return
 	}
 	st := h.State()
-	fact := fmt.Sprintf("距离 %d 米，摔死 %d 次，金币 %d，Boss 战：%s",
-		st.Dist, st.Deaths, ended.FinalCoins, outcomeText(ended.Outcome))
+	fact := fmt.Sprintf("%s：距离 %d 米，摔死 %d 次，金币 %d，Boss 战：%s",
+		h.playerNameOf(), st.Dist, st.Deaths, ended.FinalCoins, outcomeText(ended.Outcome))
 	h.speak("【本局结束】"+fact, false)
 	h.writeMemory("【对局】" + fact)
+}
+
+// playerNameOf 记忆归档仍按设备 MAC（平台读取侧按终端身份取节点），
+// 多人共用一台设备时靠摘要里的玩家名区分——写入侧不按名分桶。
+func (h *GameHub) playerNameOf() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.playerName != "" {
+		return h.playerName
+	}
+	return "无名侠"
 }
 
 // handleRunEnded 途中局终（掉坑/撞杆，未到 Boss 战）的记忆与教练标记。
@@ -387,10 +400,19 @@ func (h *GameHub) handleRunEnded(m browserMsg) {
 	if h.bossActive() {
 		return
 	}
-	fact := fmt.Sprintf("距离 %d 米，摔死 %d 次，金币 %d，未到 Boss 战（途中局终）",
-		m.Dist, m.Deaths, m.Coins)
+	if m.Name != "" {
+		h.rememberPlayerName(m.Name)
+	}
+	fact := fmt.Sprintf("%s：距离 %d 米，摔死 %d 次，金币 %d，未到 Boss 战（途中局终）",
+		h.playerNameOf(), m.Dist, m.Deaths, m.Coins)
 	h.speak("【本局结束】"+fact, false)
 	h.writeMemory("【对局】" + fact)
+}
+
+func (h *GameHub) rememberPlayerName(name string) {
+	h.mu.Lock()
+	h.playerName = name
+	h.mu.Unlock()
 }
 
 func (h *GameHub) writeMemory(summary string) {
@@ -495,6 +517,9 @@ func (h *GameHub) HandleBrowserWS(w http.ResponseWriter, r *http.Request) {
 			case "game-state":
 				h.applyGameState(msg.State)
 			case "boss-enter":
+				if msg.Name != "" {
+					h.rememberPlayerName(msg.Name)
+				}
 				h.enterBoss(msg.Coins)
 			case "boss-action":
 				h.bossAction(msg)

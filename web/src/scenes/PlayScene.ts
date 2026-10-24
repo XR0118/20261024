@@ -2,7 +2,7 @@ import Phaser from 'phaser'
 import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
 import { reportGameState, sendBossEnter, sendRunEnded, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
-import { reportRun } from '../player'
+import { getPlayer, reportRun } from '../player'
 
 const W = 960
 const H = 540
@@ -210,7 +210,7 @@ export class PlayScene extends Phaser.Scene {
     if (this.finished) return
     this.finished = true
     reportGameState({ playing: false, phase: 'boss', dist, deaths: this.deaths, won: false })
-    sendBossEnter(this.coins)
+    sendBossEnter(this.coins, getPlayer().name)
     this.scene.start('boss', { coins: this.coins, dist, deaths: this.deaths })
   }
 
@@ -220,7 +220,7 @@ export class PlayScene extends Phaser.Scene {
     this.finished = true
     const dist = Math.floor((this.player.x - 80) / 50)
     reportGameState({ playing: false, dist, deaths: this.deaths, won })
-    sendRunEnded(dist, this.deaths, this.coins)
+    sendRunEnded(dist, this.deaths, this.coins, getPlayer().name)
     this.reportRun(dist)
     this.hudText.setText(message)
     this.time.delayedCall(2000, () => this.scene.start('boot'))

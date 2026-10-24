@@ -97,7 +97,7 @@ func waitPhase(t *testing.T, h *GameHub, want string) {
 
 func enterBattle(t *testing.T, h *GameHub, conn *websocket.Conn, secret string) {
 	t.Helper()
-	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30})
+	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30, "name": "测试玩家"})
 	if evs := readBossEvents(t, conn); len(evs) != 1 || evs[0].Kind != "awaiting-secret" {
 		t.Fatalf("进场应先索要密数，got %+v", evs)
 	}
@@ -352,7 +352,7 @@ func TestBossEventsAreSpoken(t *testing.T) {
 	h, vl := newBossHub(t)
 	conn := dialHub(t, h)
 
-	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30})
+	sendWS(t, conn, map[string]any{"type": "boss-enter", "coins": 30, "name": "测试玩家"})
 	readBossEvents(t, conn) // awaiting-secret
 	h.handleSTT("我的密数是四八三")
 	readBossEvents(t, conn) // battle-started
@@ -423,8 +423,8 @@ func TestBattleEndWritesMemoryAndCoachMarker(t *testing.T) {
 
 	select {
 	case body := <-got:
-		if !strings.Contains(body, "300 米") || !strings.Contains(body, "认输") || !strings.Contains(body, "Boss 战") {
-			t.Fatalf("记忆摘要应含距离与结局: %s", body)
+		if !strings.Contains(body, "测试玩家") || !strings.Contains(body, "300 米") || !strings.Contains(body, "认输") || !strings.Contains(body, "Boss 战") {
+			t.Fatalf("记忆摘要应含玩家名、距离与结局: %s", body)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("局终未写记忆片段")
