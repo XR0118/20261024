@@ -112,6 +112,8 @@ export class PlayScene extends Phaser.Scene {
         ease: 'Sine.InOut',
       })
       this.coinGroup.add(coin)
+      // 拾取半径钉死纹理尺寸：与旧版占位圆手感一致，不吃组的默认外扩
+      ;(coin.body as Phaser.Physics.Arcade.StaticBody).setSize(24, 24, true)
     }
     this.physics.add.overlap(this.player, this.coinGroup, (_, obj) => {
       const coin = obj as Phaser.GameObjects.Image
@@ -142,8 +144,8 @@ export class PlayScene extends Phaser.Scene {
   private spawnHazards() {
     const group = this.physics.add.staticGroup()
     for (const [x, y, w, h] of this.level.hazards) {
-      // 物理体透明：视觉交给斜纹警示带，碰撞形状不变
-      const bar = this.add.rectangle(x + w / 2, y + h / 2, w, h, NEON.hazardFill, 0)
+      // 物理体不可见：视觉交给斜纹警示带（Arcade 碰撞不看 visible）
+      const bar = this.add.rectangle(x + w / 2, y + h / 2, w, h, NEON.hazardFill).setVisible(false)
       group.add(bar)
       this.hazardStripes(x, y, w, h)
     }
