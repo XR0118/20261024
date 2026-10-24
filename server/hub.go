@@ -381,7 +381,12 @@ func (h *GameHub) writeRunMemory(evs []boss.Event) {
 }
 
 // handleRunEnded 途中局终（掉坑/撞杆，未到 Boss 战）的记忆与教练标记。
+// Boss 战进行中忽略：该局的记忆由 battle-ended 路径负责，防同局双写
+// （异常旧页面在战斗中补发 run-ended 的场景）。
 func (h *GameHub) handleRunEnded(m browserMsg) {
+	if h.bossActive() {
+		return
+	}
 	fact := fmt.Sprintf("距离 %d 米，摔死 %d 次，金币 %d，未到 Boss 战（途中局终）",
 		m.Dist, m.Deaths, m.Coins)
 	h.speak("【本局结束】"+fact, false)

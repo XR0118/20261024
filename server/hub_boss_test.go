@@ -454,3 +454,19 @@ func TestRunEndedWithoutBossWritesMemory(t *testing.T) {
 		t.Fatalf("途中局终也应触发教练标记:\n%s", spoken)
 	}
 }
+
+// Boss 战进行中的 run-ended（异常旧页面补发）必须被忽略——防同局双写记忆。
+func TestRunEndedIgnoredDuringBattle(t *testing.T) {
+	srv, got := fakeMemoryAPI(t)
+	h, _ := newBossHub(t)
+	h.mem = &MemoryClient{BaseURL: srv.URL, APIKey: "k", MemoryID: "mem", MAC: "aa:bb"}
+	conn := dialHub(t, h)
+	enterBattle(t, h, conn, "一二三")
+
+	sendWS(t, conn, map[string]any{"type": "run-ended", "dist": 10, "deaths": 1, "coins": 1})
+	select {
+	case body := <-got:
+		t.Fatalf("战斗中的 run-ended 不应写记忆，got %s", body)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
