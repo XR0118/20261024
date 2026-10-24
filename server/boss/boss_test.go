@@ -107,9 +107,6 @@ func TestReportSecret(t *testing.T) {
 
 func TestPlayerGuessJudgedAndBossTurnFollows(t *testing.T) {
 	b := newTestBattle(t, Secret{4, 8, 3}, Secret{9, 5, 0}, 30)
-	if _, err := b.PlayerGuess(Secret{1, 2, 2}); err == nil {
-		t.Fatal("数字重复的报数应被拒绝")
-	}
 	evs, err := b.PlayerGuess(Secret{4, 5, 6}) // 对 483：首位命中
 	if err != nil {
 		t.Fatalf("合法报数被拒: %v", err)
@@ -132,6 +129,19 @@ func TestPlayerGuessJudgedAndBossTurnFollows(t *testing.T) {
 	}
 	if b.Phase() != PhasePlayerTurn {
 		t.Fatalf("Boss 回合后轮到玩家，got %s", b.Phase())
+	}
+}
+
+// 报数口径允许重复数字：密数仍拒绝（TestReportSecret 已覆盖），
+// 报数 113 对密数 483 应正常判定（第 3 位命中），不再拒绝。
+func TestPlayerGuessAllowsRepeatedDigits(t *testing.T) {
+	b := newTestBattle(t, Secret{4, 8, 3}, Secret{9, 5, 0}, 30)
+	evs, err := b.PlayerGuess(Secret{1, 1, 3})
+	if err != nil {
+		t.Fatalf("重复数字的报数应被接受: %v", err)
+	}
+	if len(evs) < 2 || evs[0].Turn != TurnPlayer || evs[0].Guess != "113" || evs[0].Hits != 1 {
+		t.Fatalf("113 对 483 应命中 1 位并进入 Boss 回合，got %+v", evs)
 	}
 }
 

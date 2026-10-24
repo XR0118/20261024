@@ -90,17 +90,15 @@ var separators = strings.NewReplacer(
 
 func stripSeparators(s string) string { return separators.Replace(s) }
 
-var errWrongCount = fmt.Errorf("报数要报三个不重复的数字，一个一个报，比如三七八")
+// 解析层只管凑齐三位数字；重复与否由用途定——报数允许重复（引擎
+// GuessValid），密数/换数在引擎侧按 Valid 拒绝并给出各自提示。
+var errWrongCount = fmt.Errorf("报数要报三位数字，一个一个报，比如三七八")
 
 func secretFromDigits(ds []int) (Input, error) {
 	if len(ds) != 3 {
 		return Input{}, errWrongCount
 	}
-	s := Secret{ds[0], ds[1], ds[2]}
-	if !s.Valid() {
-		return Input{}, fmt.Errorf("三个数字不能重复，重新报")
-	}
-	return Input{Guess: s}, nil
+	return Input{Guess: Secret{ds[0], ds[1], ds[2]}}, nil
 }
 
 // keywords 关键词意图。「放弃换数」同时命中换数词表，放弃语义须优先判定。

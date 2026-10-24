@@ -1,6 +1,12 @@
 import Phaser from 'phaser'
 import { mic } from '../audio/mic'
-import { reportGameState, resetTTSTracking, ttsArrived, ttsArrivedAndDone } from '../audio/voice'
+import {
+  reportGameState,
+  resetTTSTracking,
+  sendBossEnter,
+  ttsArrived,
+  ttsArrivedAndDone,
+} from '../audio/voice'
 import { getPlayer, setPlayerName } from '../player'
 
 const W = 960
@@ -71,6 +77,11 @@ export class BootScene extends Phaser.Scene {
     this.add
       .text(W / 2, 478, '调试：按空格直接开始', { color: '#566079', fontSize: '15px' })
       .setOrigin(0.5)
+    this.add
+      .text(W / 2, 502, '⚔ 调试：直接挑战 Boss', { color: '#566079', fontSize: '15px' })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => this.startBossDebug())
 
     const me = getPlayer()
     this.meText = this.add
@@ -203,5 +214,12 @@ export class BootScene extends Phaser.Scene {
 
   private startGame(seed?: number) {
     this.scene.start('play', { seed })
+  }
+
+  // 调试通道：跳过跑酷直进 Boss 战（演示/联调，金币按固定原额计）
+  private startBossDebug() {
+    reportGameState({ playing: false, phase: 'boss', dist: 0, deaths: 0, won: false })
+    sendBossEnter(20, getPlayer().name)
+    this.scene.start('boss', { coins: 20, dist: 0, deaths: 0 })
   }
 }

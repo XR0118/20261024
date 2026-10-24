@@ -25,9 +25,10 @@ type LinxClient struct {
 	muted        bool // TTS 播放期间暂停上行，防止扬声器串回麦克风
 	playing      bool // 跑酷进行中：无语音需求，停上行，TTS 收尾后主动断会话（按会话时长计费）
 	wake         chan struct{}
-	speakCh      chan speakReq // 台词队列：串行播放，防 detect 打断
-	wmu          sync.Mutex    // conn 写互斥：三类写来源并存（音频转发/台词/监听控制）
-	ttsWait      *ttsWaitState // 当前台词的 TTS 完成信号（start→stop 成对）
+	speakCh      chan speakReq        // 台词队列：串行播放，防 detect 打断
+	wmu          sync.Mutex           // conn 写互斥：三类写来源并存（音频转发/台词/监听控制）
+	ttsWait      *ttsWaitState        // 当前台词的 TTS 完成信号（start→stop 成对）
+	echoGuard    map[string]time.Time // detect 注入文本的回环防抖（见 guardEcho）
 	OnSTT        func(text string)
 	OnTTSFrame   func(opus []byte)
 	OnVoiceState func(listening bool)
@@ -47,7 +48,12 @@ type ttsWaitState struct {
 }
 
 func NewLinxClient(mac string) *LinxClient {
-	return &LinxClient{Mac: mac, wake: make(chan struct{}, 1), speakCh: make(chan speakReq, 8)}
+	return &LinxClient{
+		Mac:       mac,
+		wake:      make(chan struct{}, 1),
+		speakCh:   make(chan speakReq, 8),
+		echoGuard: map[string]time.Time{},
+	}
 }
 
 const otaURL = "https://xrobo.qiniuapi.com/v1/ota/"
@@ -245,7 +251,9 @@ func (c *LinxClient) loop(ctx context.Context, conn *websocket.Conn) error {
 				}
 				c.setListening(true)
 			case "stt":
-				if c.OnSTT != nil && msg.Text != "" {
+				// detect 注入的台词会被平台原样回显为 stt：不过滤，Boss 报的
+				// 数字会被当成玩家的报数再次进引擎，自播死循环（实机踩过）
+				if c.OnSTT != nil && msg.Text != "" && !c.isEcho(msg.Text) {
 					log.Printf("linx stt: %q", msg.Text)
 					c.OnSTT(msg.Text)
 				}
@@ -319,6 +327,31 @@ func (c *LinxClient) writeConn(ctx context.Context, conn *websocket.Conn, typ we
 	return conn.Write(ctx, typ, data)
 }
 
+// guardEcho 登记一句即将注入的台词：平台会把 detect 的文本原样回显为
+// stt 消息，isEcho 据此丢弃回显，防止自己的台词重入引擎。
+func (c *LinxClient) guardEcho(text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	c.echoGuard[text] = now.Add(15 * time.Second)
+	for k, exp := range c.echoGuard {
+		if now.After(exp) {
+			delete(c.echoGuard, k)
+		}
+	}
+}
+
+// isEcho 一次性命中：真正的玩家重复话语最多牺牲一次。
+func (c *LinxClient) isEcho(text string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.echoGuard[text]; !ok {
+		return false
+	}
+	delete(c.echoGuard, text)
+	return true
+}
+
 // Speak 排队一句台词（非阻塞）；exact 为 true 时逐字直发而非交平台 LLM。
 func (c *LinxClient) Speak(text string, exact bool) {
 	select {
@@ -348,6 +381,7 @@ func (c *LinxClient) deliverSpeak(ctx context.Context, req speakReq) {
 		conn, sid := c.conn, c.sessionID
 		c.mu.Unlock()
 		if conn != nil && sid != "" {
+			c.guardEcho(req.text)
 			c.armTTSDone()
 			msg := map[string]any{
 				"session_id": sid,
