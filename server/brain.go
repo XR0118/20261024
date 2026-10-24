@@ -47,6 +47,7 @@ const (
 	intentStart
 	intentNewLevel
 	intentReport
+	intentChangeSkin
 )
 
 func classify(msg string) intent {
@@ -58,6 +59,8 @@ func classify(msg string) intent {
 		return intentNewLevel
 	case strings.Contains(m, "成绩") || strings.Contains(m, "表现") || strings.Contains(m, "总结") || strings.Contains(m, "点评"):
 		return intentReport
+	case strings.Contains(m, "造型"):
+		return intentChangeSkin
 	}
 	return intentOther
 }

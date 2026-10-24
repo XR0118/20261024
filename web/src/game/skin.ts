@@ -7,9 +7,10 @@ export const SKIN_PRICE = 20
 export const SKIN_BODY_W = 36
 export const SKIN_BODY_H = 48
 
-// 本地指定造型（T9 验收通道：?skin=wave；T10 起以服务端当前造型为准）
-export function localSkin(): SkinId {
-  return new URLSearchParams(location.search).get('skin') === 'wave' ? 'wave' : 'bean'
+// 调试通道：URL ?skin=wave 强制指定造型，覆盖服务端当前造型
+export function urlSkin(): SkinId | null {
+  const v = new URLSearchParams(location.search).get('skin')
+  return v === 'wave' || v === 'bean' ? v : null
 }
 
 export function buildSkin(scene: Phaser.Scene, id: SkinId): Phaser.GameObjects.Container {

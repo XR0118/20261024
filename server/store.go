@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,8 @@ type Player struct {
 	TotalCoins int       `json:"total_coins"`
 	Runs       int       `json:"runs"`
 	Balance    int       `json:"balance"`
+	Skins      []string  `json:"skins,omitempty"`
+	ActiveSkin string    `json:"active_skin,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
@@ -144,6 +147,88 @@ func walletHandler(store *Store) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"balance": store.BalanceOf(id)})
+		_ = json.NewEncoder(w).Encode(store.WalletOf(id))
 	}
+}
+
+// Wallet 玩家的商店视图：语音购买与首页展示共用
+type Wallet struct {
+	Owned      []string `json:"owned"`
+	Active     string   `json:"active"`
+	Balance    int      `json:"balance"`
+	TotalCoins int      `json:"total_coins"`
+}
+
+// WalletOf 新玩家（或旧档案）默认 bean、零余额。免费默认造型从缺省推导，
+// 不写入 JSON——旧 data.json 无 skins 字段也能自然升级
+func (s *Store) WalletOf(id string) Wallet {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.players[id]
+	if !ok || p == nil {
+		return Wallet{Owned: []string{skinBean}, Active: skinBean}
+	}
+	w := Wallet{Balance: p.Balance, TotalCoins: p.TotalCoins}
+	w.Active = p.ActiveSkin
+	if w.Active == "" {
+		w.Active = skinBean
+	}
+	w.Owned = append(w.Owned, skinBean)
+	for _, sk := range p.Skins {
+		if sk != skinBean {
+			w.Owned = append(w.Owned, sk)
+		}
+	}
+	return w
+}
+
+func hasSkin(list []string, skin string) bool {
+	for _, s := range list {
+		if s == skin {
+			return true
+		}
+	}
+	return false
+}
+
+// BuySkin 扣费购买并穿上：只减余额（累计获得不动）。免费默认/重复购买/余额不足都拒绝
+func (s *Store) BuySkin(id, skin string, price int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.players[id]
+	if !ok {
+		return fmt.Errorf("unknown player %s", id)
+	}
+	if skin != skinBean && skin != skinWave {
+		return fmt.Errorf("unknown skin %s", skin)
+	}
+	if skin == skinBean || hasSkin(p.Skins, skin) {
+		return fmt.Errorf("skin %s already owned", skin)
+	}
+	if p.Balance < price {
+		return fmt.Errorf("balance %d < price %d", p.Balance, price)
+	}
+	p.Balance -= price
+	p.Skins = append(p.Skins, skin)
+	p.ActiveSkin = skin
+	p.UpdatedAt = time.Now()
+	s.saveLocked()
+	return nil
+}
+
+// SwitchSkin 换上已拥有的造型（免费默认视为人人拥有）
+func (s *Store) SwitchSkin(id, skin string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.players[id]
+	if !ok {
+		return fmt.Errorf("unknown player %s", id)
+	}
+	if skin != skinBean && !hasSkin(p.Skins, skin) {
+		return fmt.Errorf("skin %s not owned", skin)
+	}
+	p.ActiveSkin = skin
+	p.UpdatedAt = time.Now()
+	s.saveLocked()
+	return nil
 }

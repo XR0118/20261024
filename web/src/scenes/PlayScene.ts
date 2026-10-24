@@ -3,7 +3,7 @@ import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
 import { reportGameState, sendBossEnter, sendRunEnded, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
 import { getPlayer, reportRun } from '../player'
-import { applyRunAnimation, buildSkin, localSkin, SKIN_BODY_H, SKIN_BODY_W } from '../game/skin'
+import { applyRunAnimation, buildSkin, urlSkin, SKIN_BODY_H, SKIN_BODY_W } from '../game/skin'
 
 const W = 960
 const H = 540
@@ -32,6 +32,7 @@ export class PlayScene extends Phaser.Scene {
   private lastJumpAt = 0
   private finished = false
   private seed = 20261024
+  private skin = ''
   private level!: Level
   private lastReport = 0
 
@@ -39,9 +40,10 @@ export class PlayScene extends Phaser.Scene {
     super('play')
   }
 
-  init(data: { deaths?: number; seed?: number }) {
+  init(data: { deaths?: number; seed?: number; skin?: string }) {
     this.deaths = data.deaths ?? 0
     this.seed = data.seed ?? this.seed
+    this.skin = data.skin ?? ''
     this.finished = false
     this.coins = 0
     // Scene 实例跨 restart 复用，体力必须在这里复位，否则带着上局的空条开局
@@ -59,7 +61,9 @@ export class PlayScene extends Phaser.Scene {
     for (const [x, w, y] of this.level.ground) solids.push(this.solid(x, w, y, 40, 0x4c5f96))
     for (const [x, w, y] of this.level.platforms) solids.push(this.solid(x, w, y, 16, 0x7a6ff0))
 
-    this.player = buildSkin(this, localSkin())
+    // 造型优先级：URL 调试参数 > BootScene 传入的服务端当前造型
+    const skin = urlSkin() ?? (this.skin === 'wave' ? 'wave' : 'bean')
+    this.player = buildSkin(this, skin)
     this.player.setPosition(80, 400)
     this.physics.add.existing(this.player)
     this.playerBody = this.player.body as Phaser.Physics.Arcade.Body

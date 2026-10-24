@@ -1,6 +1,7 @@
 // 语音上下行管线（ADR-0002）：共享麦克风流 → WebCodecs OPUS 编码 → WS 上行；
 // WS 下行 TTS OPUS → 解码 → 排队播放。stt 触发的游戏动作以 game-action 事件广播。
 import { mic } from './mic'
+import { getPlayer } from '../player'
 
 const UPSTREAM = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
@@ -196,7 +197,8 @@ function makeBuffer(audio: AudioData): AudioBuffer {
 let lastState = ''
 export function reportGameState(state: unknown) {
   if (ws?.readyState !== WebSocket.OPEN) return
-  const payload = JSON.stringify({ type: 'game-state', state })
+  const me = getPlayer()
+  const payload = JSON.stringify({ type: 'game-state', state, player_id: me.id, name: me.name })
   if (payload === lastState) return // 游戏每帧都报，粗去重降低上行噪音
   lastState = payload
   ws.send(payload)

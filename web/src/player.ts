@@ -37,10 +37,10 @@ export function reportRun(dist: number, coins: number): Promise<Response> {
 
 
 // 钱包查询：失败返回 0——余额是展示性信息，不应阻塞首页
-export async function fetchBalance(): Promise<number> {
+export type Wallet = { owned: string[]; active: string; balance: number; total_coins: number }
+export async function fetchWallet(): Promise<Wallet> {
   const me = getPlayer()
   const res = await fetch('/api/wallet?id=' + encodeURIComponent(me.id))
-  if (!res.ok) return 0
-  const data = (await res.json()) as { balance: number }
-  return data.balance ?? 0
+  if (!res.ok) return { owned: ['bean'], active: 'bean', balance: 0, total_coins: 0 }
+  return (await res.json()) as Wallet
 }

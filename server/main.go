@@ -71,6 +71,8 @@ func main() {
 		log.Fatalf("load store: %v", err)
 	}
 
+	hub.SetStore(store)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/leaderboard", leaderboardHandler(store))
 	mux.HandleFunc("POST /api/run", reportRunHandler(store))

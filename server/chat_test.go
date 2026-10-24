@@ -59,6 +59,7 @@ func TestClassify(t *testing.T) {
 		"来一局吧":    intentStart,
 		"换一张地图":   intentNewLevel,
 		"看看我的成绩":  intentReport,
+		"换个造型":     intentChangeSkin,
 		"今天天气怎么样": intentOther,
 	}
 	for msg, want := range cases {

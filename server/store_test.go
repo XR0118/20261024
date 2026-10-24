@@ -69,3 +69,41 @@ func TestLoadLegacyDataHasZeroBalance(t *testing.T) {
 		t.Fatalf("存量不折算，余额应为 0，got %d", got)
 	}
 }
+
+// 造型商店持久化：默认 bean、购买扣费只减余额、切换与已购跨重启保留
+func TestStoreSkins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.json")
+	s, _ := LoadStore(path)
+
+	st := s.WalletOf("p")
+	if st.Active != "bean" || st.Balance != 0 || len(st.Owned) != 1 || st.Owned[0] != "bean" {
+		t.Fatalf("want default bean/balance 0, got %+v", st)
+	}
+
+	s.ReportRun("p", "阿福", 10, 30)
+	if err := s.BuySkin("p", "wave", 20); err != nil {
+		t.Fatalf("buy: %v", err)
+	}
+	if st := s.WalletOf("p"); st.Balance != 10 || st.TotalCoins != 30 || st.Active != "wave" {
+		t.Fatalf("buy should deduct balance only and wear it: %+v", st)
+	}
+	if err := s.BuySkin("p", "wave", 20); err == nil {
+		t.Fatal("repeat buy should fail")
+	}
+	if err := s.BuySkin("p", "bean", 20); err == nil {
+		t.Fatal("buying free default should fail")
+	}
+
+	if err := s.SwitchSkin("p", "bean"); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if err := s.SwitchSkin("q", "wave"); err == nil {
+		t.Fatal("switching to unowned should fail")
+	}
+
+	s2, _ := LoadStore(path)
+	st2 := s2.WalletOf("p")
+	if st2.Active != "bean" || st2.Balance != 10 || len(st2.Owned) != 2 {
+		t.Fatalf("want bean/10/2 skins after reload, got %+v", st2)
+	}
+}
