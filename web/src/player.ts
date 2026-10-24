@@ -24,3 +24,13 @@ export function setPlayerName(name: string): Player {
   localStorage.setItem(KEY, JSON.stringify(p))
   return p
 }
+
+// 局终结算入账（金币累计与最远距离由后端持久化，关闭页面不丢）
+export function reportRun(dist: number, coins: number): Promise<Response> {
+  const me = getPlayer()
+  return fetch('/api/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: me.id, name: me.name, dist, coins }),
+  })
+}

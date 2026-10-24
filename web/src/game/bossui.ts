@@ -1,6 +1,7 @@
 // BossScene 的纯状态层：服务端 boss-events → UI 状态。
 // 场景类只负责渲染与输入，状态演进集中在这里做表驱动测试。
 
+// 字段名与后端 JSON tag（snake_case）严格一致，否则渲染 undefined
 export type BossEvent = {
   kind: string
   turn?: string
@@ -23,6 +24,7 @@ export type BossUiState = {
   hint: string
   rows: GuessRow[]
   revealed: Record<number, number> // 亮位：第几位（1–3）→ 数字
+  mySecret?: string // 玩家密数回显（语音/键盘上报确认）
   ended?: { outcome: string; coins: number; finalCoins: number }
 }
 
@@ -47,6 +49,8 @@ function applyOne(st: BossUiState, e: BossEvent): BossUiState {
       return { ...st, stage: 'awaiting-secret', hint: e.message ?? '报出你的三位密数' }
     case 'battle-started':
       return { ...st, stage: 'player-turn', hint: '开战！你先猜' }
+    case 'secret-confirmed':
+      return { ...st, mySecret: e.guess ?? st.mySecret }
     case 'guess-result': {
       const row: GuessRow = {
         who: e.turn === 'player' ? '你' : 'Boss',

@@ -12,8 +12,10 @@ describe('applyBossEvents reducer', () => {
     let st = applyBossEvents(initialBossUi(), [
       { kind: 'awaiting-secret' },
       { kind: 'battle-started' },
+      { kind: 'secret-confirmed', guess: '123' },
     ])
     expect(st.stage).toBe('player-turn')
+    expect(st.mySecret).toBe('123') // 语音/键盘上报后回显核对
     st = applyBossEvents(st, [
       { kind: 'guess-result', turn: 'player', guess: '456', hits: 1 },
       { kind: 'guess-result', turn: 'boss', guess: '012', hits: 0 },

@@ -100,8 +100,12 @@ func enterBattle(t *testing.T, h *GameHub, conn *websocket.Conn, secret string) 
 		t.Fatalf("进场应先索要密数，got %+v", evs)
 	}
 	h.handleSTT("我的密数是" + secret)
-	if evs := readBossEvents(t, conn); len(evs) != 1 || evs[0].Kind != "battle-started" {
-		t.Fatalf("上报密数应开战，got %+v", evs)
+	evs := readBossEvents(t, conn)
+	if len(evs) != 2 || evs[0].Kind != "battle-started" || evs[1].Kind != "secret-confirmed" {
+		t.Fatalf("上报密数应开战并回显确认，got %+v", evs)
+	}
+	if evs[1].Guess == "" {
+		t.Fatalf("secret-confirmed 应携带密数回显，got %+v", evs[1])
 	}
 }
 

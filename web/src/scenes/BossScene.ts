@@ -1,7 +1,7 @@
 import Phaser from 'phaser'
 import { reportGameState, sendBossAction } from '../audio/voice'
 import { applyBossEvents, initialBossUi, type BossEvent, type BossUiState } from '../game/bossui'
-import { getPlayer } from '../player'
+import { reportRun } from '../player'
 
 const W = 960
 const H = 540
@@ -17,6 +17,7 @@ export class BossScene extends Phaser.Scene {
   private lastReport = 0
 
   private hintText!: Phaser.GameObjects.Text
+  private mySecretText!: Phaser.GameObjects.Text
   private rowsText!: Phaser.GameObjects.Text
   private revealText!: Phaser.GameObjects.Text
   private bufferText!: Phaser.GameObjects.Text
@@ -52,8 +53,9 @@ export class BossScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
-    this.revealText = this.add.text(24, 100, '亮位情报：暂无', { color: '#38b764', fontSize: '16px' })
-    this.rowsText = this.add.text(24, 128, '', { color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
+    this.mySecretText = this.add.text(24, 100, '我的密数：待上报', { color: '#ffd23f', fontSize: '16px' })
+    this.revealText = this.add.text(24, 124, '亮位情报：暂无', { color: '#38b764', fontSize: '16px' })
+    this.rowsText = this.add.text(24, 152, '', { color: '#cfd2e8', fontSize: '17px', lineSpacing: 6 })
     this.hintText = this.add
       .text(W / 2, 384, this.ui.hint, { color: '#ffe6a7', fontSize: '20px' })
       .setOrigin(0.5)
@@ -102,7 +104,7 @@ export class BossScene extends Phaser.Scene {
     })
   }
 
-  // 阶段按钮：攻击等待期给点击格挡兜底（QTE 喊声判定在 T6 接管），
+  // 阶段按钮：攻击等待期给点击格挡兜底（喊声 QTE 接入前的过渡），
   // 换数抉择给放弃键；投降常驻
   private buildStageButtons() {
     const mk = (label: string, x: number, action: () => void) =>
@@ -144,7 +146,9 @@ export class BossScene extends Phaser.Scene {
   // 提交三位数字：按当前阶段选择动作——报密数/报数/换数在服务端同一引擎汇合
   private submitBuffer() {
     if (this.buffer.length !== 3) {
-      this.hintText.setText('要凑满三位数字再报')
+      // 本地校验的提示也走 reducer，避免绕过状态层被下个事件覆盖
+      this.ui = applyBossEvents(this.ui, [{ kind: 'error', message: '要凑满三位数字再报' }])
+      this.redraw()
       return
     }
     const action =
@@ -163,6 +167,7 @@ export class BossScene extends Phaser.Scene {
 
   private redraw() {
     this.hintText.setText(this.ui.hint)
+    this.mySecretText.setText(this.ui.mySecret ? `我的密数：${this.ui.mySecret}` : '我的密数：待上报')
     const lines = this.ui.rows.map(
       (r) => `${r.who === '你' ? '你 ' : 'BOSS'} ${r.guess} → ${r.hits} 位命中`,
     )
@@ -192,17 +197,7 @@ export class BossScene extends Phaser.Scene {
     this.reported = true
     const { finalCoins, outcome } = this.ui.ended
     this.banner.setText(outcome === 'win' ? '胜！金币翻倍' : '负·原额结算')
-    const me = getPlayer()
-    void fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: me.id,
-        name: me.name,
-        dist: this.run.dist,
-        coins: finalCoins,
-      }),
-    })
+    void reportRun(this.run.dist, finalCoins)
     this.time.delayedCall(3200, () => this.scene.start('boot'))
   }
 }

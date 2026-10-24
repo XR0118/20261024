@@ -292,6 +292,10 @@ func (h *GameHub) applyInput(in boss.Input) {
 	case boss.PhaseAwaitingSecret:
 		if in.Guess != (boss.Secret{}) {
 			evs, err = b.ReportSecret(in.Guess)
+			if err == nil {
+				// 界面确认：语音上报的密数须回显给玩家核对（键盘路径同源）
+				evs = append(evs, boss.Event{Kind: "secret-confirmed", Guess: in.Guess.String(), Message: "密数已确认"})
+			}
 		}
 	case boss.PhasePlayerTurn:
 		if in.Guess != (boss.Secret{}) {

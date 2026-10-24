@@ -2,7 +2,7 @@ import Phaser from 'phaser'
 import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
 import { reportGameState, sendBossEnter, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
-import { getPlayer } from '../player'
+import { reportRun } from '../player'
 
 const W = 960
 const H = 540
@@ -226,11 +226,6 @@ export class PlayScene extends Phaser.Scene {
 
   // 结算上报：金币累计与最远距离由后端持久化（关闭页面不丢）
   private reportRun(dist: number) {
-    const me = getPlayer()
-    void fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: me.id, name: me.name, dist, coins: this.coins }),
-    })
+    void reportRun(dist, this.coins)
   }
 }
