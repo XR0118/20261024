@@ -3,6 +3,7 @@ import { JUMP_THRESHOLD, levelToPower, mic } from '../audio/mic'
 import { reportGameState, sendBossEnter, sendRunEnded, voiceListening } from '../audio/voice'
 import { makeLevel, type Level } from '../game/level'
 import { getPlayer, reportRun } from '../player'
+import { applyRunAnimation, buildSkin, localSkin, SKIN_BODY_H, SKIN_BODY_W } from '../game/skin'
 
 const W = 960
 const H = 540
@@ -17,7 +18,7 @@ const STAMINA_RECOVER = 0.65
 const JUMP_COOLDOWN_MS = 250
 
 export class PlayScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Rectangle
+  private player!: Phaser.GameObjects.Container
   private playerBody!: Phaser.Physics.Arcade.Body
   private micFill!: Phaser.GameObjects.Rectangle
   private hudText!: Phaser.GameObjects.Text
@@ -58,9 +59,12 @@ export class PlayScene extends Phaser.Scene {
     for (const [x, w, y] of this.level.ground) solids.push(this.solid(x, w, y, 40, 0x4c5f96))
     for (const [x, w, y] of this.level.platforms) solids.push(this.solid(x, w, y, 16, 0x7a6ff0))
 
-    this.player = this.add.rectangle(80, 400, 36, 48, 0xffcd75)
+    this.player = buildSkin(this, localSkin())
+    this.player.setPosition(80, 400)
     this.physics.add.existing(this.player)
     this.playerBody = this.player.body as Phaser.Physics.Arcade.Body
+    // 碰撞盒钉死为旧占位矩形的 36×48：造型纯视觉，跳跃手感不随皮肤变
+    this.playerBody.setSize(SKIN_BODY_W, SKIN_BODY_H)
     this.playerBody.setCollideWorldBounds(false)
     for (const s of solids) this.physics.add.collider(this.player, s)
 
@@ -157,6 +161,7 @@ export class PlayScene extends Phaser.Scene {
     this.playerBody.setVelocityX(RUN_SPEED)
 
     const grounded = this.playerBody.blocked.down
+    applyRunAnimation(this.player, this.playerBody.velocity.y, grounded, dt)
 
     // 地面起跳（带冷却）；空中喊声 = 喷气推力（越响升得越快），消耗体力
     const power = levelToPower(level)
