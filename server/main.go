@@ -1,16 +1,42 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
+
+// loadDotEnv 读取 .env（存在时）：本地 demo 免去每次 export；
+// 已存在的环境变量优先于文件——线上/CI 直接设 env 不被覆盖。
+// 文件在 .gitignore 里，凭据不进版本库。
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "="); ok {
+			if os.Getenv(k) == "" {
+				os.Setenv(strings.TrimSpace(k), strings.TrimSpace(v))
+			}
+		}
+	}
+}
 
 // 部署形态：灵矽云平台需要公网可达的回调地址，本地开发用内网穿透把
 // 这个端口暴露出去，智控台里把智能体配置为第三方应用接入模式。
 func main() {
+	loadDotEnv(".env")
 	addr := flag.String("addr", ":8080", "HTTP 监听地址")
 	mac := flag.String("linx-mac", "98:a3:16:f9:d9:35", "灵矽设备 MAC（智控台预注册绑定的那台）")
 	flag.Parse()
