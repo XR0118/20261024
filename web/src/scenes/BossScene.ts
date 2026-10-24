@@ -53,8 +53,9 @@ export class BossScene extends Phaser.Scene {
   create() {
     this.cameras.main.setBackgroundColor('#12101e')
     // 圆角面板底板先建垫底，文字按原布局叠上：密数+情报 / 报数记录 / 中央提示+输入
+    // 左侧两框等宽对齐（330 取密数/亮位信息的最长行），避免一长一短
     neonPanel(this, 12, 92, 330, 56)
-    neonPanel(this, 12, 156, 560, 200)
+    neonPanel(this, 12, 156, 330, 200)
     neonPanel(this, W / 2 - 200, 358, 400, 96)
     this.add
       .text(W / 2, 44, '⚔ 挑战者 · 猜数字对决', {
@@ -97,7 +98,7 @@ export class BossScene extends Phaser.Scene {
     this.buildKeypad()
     this.buildStageButtons()
     ensureSparkTexture(this)
-    this.boss = buildBossAvatar(this, 820, 235)
+    this.boss = buildBossAvatar(this, 640, 220)
     // 玩家分身：带上跑酷同款造型与 Boss 对峙，受击/格挡特效挂在它身上
     this.playerAvatar = buildSkin(this, urlSkin() ?? (this.skin === 'wave' ? 'wave' : 'bean'))
     this.playerAvatar.setPosition(150, 430).setScale(0.9)
