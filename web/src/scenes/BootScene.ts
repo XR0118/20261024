@@ -10,6 +10,7 @@ import {
 import { fetchWallet, getPlayer, setPlayerName } from '../player'
 import { buildSkin, SKIN_PRICE, SkinId, startIdleBreathing } from '../game/skin'
 import { FONT, NEON, paintNightSky } from '../game/theme'
+import { debugUI } from '../game/debugui'
 
 const W = 960
 const H = 540
@@ -88,14 +89,16 @@ export class BootScene extends Phaser.Scene {
         fontSize: '20px',
       })
       .setOrigin(0.5)
-    this.add
-      .text(W / 2, 478, '调试：按空格直接开始', { ...FONT, color: '#566079', fontSize: '15px' })
-      .setOrigin(0.5)
-    this.add
-      .text(W / 2, 502, '⚔ 调试：直接挑战 Boss', { ...FONT, color: '#566079', fontSize: '15px' })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => this.startBossDebug())
+    if (debugUI) {
+      this.add
+        .text(W / 2, 478, '调试：按空格直接开始', { ...FONT, color: '#566079', fontSize: '15px' })
+        .setOrigin(0.5)
+      this.add
+        .text(W / 2, 502, '⚔ 调试：直接挑战 Boss', { ...FONT, color: '#566079', fontSize: '15px' })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => this.startBossDebug())
+    }
 
     const me = getPlayer()
     this.meText = this.add
