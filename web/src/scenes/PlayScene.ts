@@ -53,6 +53,10 @@ export class PlayScene extends Phaser.Scene {
   }
 
   create() {
+    // 纹理必须先于一切使用方生成：spawnCoins/HUD 在 create 里就取 'coin'，
+    // 晚于此处生成会拿到 __MISSING 黑框占位
+    ensureCoinTexture(this)
+    ensureSparkTexture(this)
     this.level = makeLevel(this.seed)
 
     paintNightSky(this, this.seed, W, H, this.level.worldWidth)
@@ -93,8 +97,6 @@ export class PlayScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1)
 
     this.jumpKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE)
-    ensureSparkTexture(this)
-    ensureCoinTexture(this)
     // 喷气尾焰：空中喊声推进时从脚底向下喷（紫/青双色霓虹火花）
     this.jetEmitter = this.add.particles(0, 0, 'spark', {
       speed: { min: 90, max: 180 },
