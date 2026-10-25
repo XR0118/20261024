@@ -6,6 +6,8 @@
 开场主持、按主题动态生成关卡、金币经济与全语音商店、以及一个会根据你的
 表现实时嘴炮并跟你猜数字对决的 AI Boss。
 
+> 🎬 **成品 Demo 视频：[docs/demo.mp4](docs/demo.mp4)**（3 分 41 秒；Boss 报数段为 3× 快进，画面有「手动加速中...」提示）
+
 ## 玩法全景
 
 1. **待命**：语音唤醒后说「开始游戏」，主持人倒计时开局。
@@ -61,7 +63,7 @@ npm run dev     # 默认 5197；浏览器授权麦克风
 ```
 
 可选环境变量：`LINGX_API_KEY` / `LINGX_MEMORY_ID`（教练复盘记忆写入）。
-空格键为无声控调试通道（跳满档、直进 Boss 战入口在首页）。
+无声控调试通道：URL 加 `?debug=1` 后，空格=跳满档，首页出现直进 Boss 入口。
 
 ## 测试
 
@@ -83,5 +85,6 @@ server/   # golang 后端
           #   boss/      猜数字引擎（熵贪心）
           #   brain.go   语义指令路由   shop.go 语音商店决策
           #   store.go   JSON 持久化（排行榜/钱包/造型）
-docs/     # ADR、三天计划、demo 脚本、prompt、agent 约定
+          #   memory.go  复盘记忆写入（灵矽长期记忆 API）
+docs/     # 成品 demo 视频、ADR、demo 脚本、三天计划、prompt、agent 约定
 ```
