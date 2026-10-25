@@ -7,6 +7,7 @@ import { reportRun } from '../player'
 import { FONT, NEON, ensureSparkTexture, neonPanel } from '../game/theme'
 import { buildBossAvatar, type BossAvatar } from '../game/bossavatar'
 import { buildSkin, urlSkin } from '../game/skin'
+import { debugUI } from '../game/debugui'
 
 const W = 960
 const H = 540
@@ -29,8 +30,8 @@ export class BossScene extends Phaser.Scene {
   private revealText!: Phaser.GameObjects.Text
   private bufferText!: Phaser.GameObjects.Text
   private banner!: Phaser.GameObjects.Text
-  private blockOkBtn!: Phaser.GameObjects.Container
-  private blockFailBtn!: Phaser.GameObjects.Container
+  private blockOkBtn?: Phaser.GameObjects.Container
+  private blockFailBtn?: Phaser.GameObjects.Container
   private declineSwapBtn!: Phaser.GameObjects.Container
   private boss!: BossAvatar
   private playerAvatar!: Phaser.GameObjects.Container
@@ -146,6 +147,7 @@ export class BossScene extends Phaser.Scene {
 
   // 数字键盘是纯键盘外的调试兜底通道，不面板化（面板会与紧凑行距重叠）
   private buildKeypad() {
+    if (!debugUI) return
     const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'OK']
     keys.forEach((k, i) => {
       const x = W / 2 - 132 + (i % 3) * 132
@@ -164,8 +166,11 @@ export class BossScene extends Phaser.Scene {
     const mk = (label: string, x: number, action: () => void) =>
       this.addButton(label, x, 60, action, '#ef476f')
 
-    this.blockOkBtn = mk('格挡成功', W - 260, () => sendBossAction('block', { blocked: true }))
-    this.blockFailBtn = mk('格挡失败', W - 140, () => sendBossAction('block', { blocked: false }))
+    // 格挡兜底是喊声 QTE 之外的调试通道，默认藏起来让画面干净
+    if (debugUI) {
+      this.blockOkBtn = mk('格挡成功', W - 260, () => sendBossAction('block', { blocked: true }))
+      this.blockFailBtn = mk('格挡失败', W - 140, () => sendBossAction('block', { blocked: false }))
+    }
     this.declineSwapBtn = mk('放弃换数', W - 260, () => sendBossAction('decline-swap'))
     this.addButton('投降', W - 90, 60, () => sendBossAction('surrender'), '#566079')
   }
@@ -329,8 +334,8 @@ export class BossScene extends Phaser.Scene {
         : '亮位情报：暂无',
     )
 
-    this.blockOkBtn.setVisible(this.ui.stage === 'attack')
-    this.blockFailBtn.setVisible(this.ui.stage === 'attack')
+    this.blockOkBtn?.setVisible(this.ui.stage === 'attack')
+    this.blockFailBtn?.setVisible(this.ui.stage === 'attack')
     this.declineSwapBtn.setVisible(this.ui.stage === 'swap')
     this.redrawBuffer()
   }
