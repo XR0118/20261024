@@ -1,4 +1,2 @@
 # Claude Code 本地个人配置（不入库）
 .claude/settings.local.json
-# server 本地凭据（main.go loadDotEnv 读取），不入库
-server/.env
